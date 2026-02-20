@@ -1,0 +1,5 @@
+model,MAE,RMSE,R2,best_params
+Linear Regression (Baseline),5.1348,6.7493,0.7726,
+Ridge Regression,4.8286,6.5294,0.7871,{'alpha': 100.0}
+Random Forest,4.5702,6.5961,0.7828,"{'max_depth': 5, 'min_samples_split': 10, 'n_estimators': 50}"
+XGBoost,4.9735,7.3464,0.7305,"{'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 50}"
