@@ -110,11 +110,11 @@ Train: 2024 data (366 days) → Test: 2025 data (174 days after feature engineer
 | Model | MAE | RMSE | R² |
 |-------|-----|------|----|
 | Linear Regression (Baseline) | 5.1348 | 6.7493 | 0.7726 |
-| Ridge Regression | 4.8286 | 6.5294 | 0.7871 |
-| **Random Forest** | **4.5702** | **6.5961** | **0.7828** |
+| Ridge Regression | 4.8286 | **6.5294** | **0.7871** |
+| Random Forest | **4.5702** | 6.5961 | 0.7828 |
 | XGBoost | 4.9735 | 7.3464 | 0.7305 |
 
-**Best Model:** Random Forest (lowest MAE = 4.57 µg/m³)
+**Best Model:** Random Forest (lowest MAE = 4.57 µg/m³, best primary metric)
 
 ## Features (17 total)
 
