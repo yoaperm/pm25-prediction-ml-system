@@ -64,17 +64,6 @@ cat results/monitoring_results.csv
 
 Or in Airflow UI → `pm25_pipeline` → grid → `check_mae_and_psi` task → **XCom** tab.
 
-### Reset to zero
-
-```bash
-# Stop and remove all containers + volumes
-docker compose down -v
-
-# Clear result logs
-rm -f results/predictions_log.csv results/actuals_log.csv \
-       results/monitoring_results.csv results/experiment_results.csv
-```
-
 ---
 
 ## Dataset
