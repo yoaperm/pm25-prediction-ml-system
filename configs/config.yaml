@@ -42,18 +42,31 @@ models:
   random_forest:
     name: "RandomForestRegressor"
     params:
-      n_estimators: [50, 100, 200]
-      max_depth: [5, 10, 15, null]
+      n_estimators: [100, 200, 300, 500]
+      max_depth: [5, 10, 15, 20, null]
       min_samples_split: [2, 5, 10]
+      min_samples_leaf: [1, 2, 4]
+      max_features: ["sqrt", "log2", 0.5]
       random_state: 42
 
   xgboost:
     name: "XGBRegressor"
     params:
-      n_estimators: [50, 100, 200]
+      n_estimators: [100, 200, 300]
       max_depth: [3, 5, 7]
       learning_rate: [0.01, 0.05, 0.1]
+      subsample: [0.8, 1.0]
+      colsample_bytree: [0.8, 1.0]
       random_state: 42
+
+  lstm:
+    name: "LSTMRegressor"
+    params:
+      units: [32, 64, 128]
+      dropout: [0.1, 0.2]
+      learning_rate: [0.001, 0.01]
+      epochs: [50]
+      batch_size: [16]
 
 # Evaluation metrics
 evaluation:
@@ -65,6 +78,38 @@ output:
   models_dir: "models"
   results_dir: "results"
   reports_dir: "reports"
+  onnx_dir: "models/onnx"
 
 # Reproducibility
 random_state: 42
+
+# Model monitoring & auto-retraining
+monitoring:
+  # Logs
+  predictions_log: "results/predictions_log.csv"
+  actuals_log: "results/actuals_log.csv"
+  results_file: "results/monitoring_results.csv"
+  # Rolling window of days used to compute metrics
+  rolling_window_days: 30
+  # Minimum matched pairs required before evaluating
+  min_evaluation_pairs: 7
+
+  # ── MAE check ──────────────────────────────────────────────
+  mae:
+    enabled: true
+    threshold: 6.0      # retrain if MAE > this (µg/m³)
+
+  # ── PSI check (prediction vs actual distribution) ──────────
+  # PSI < 0.1  → stable
+  # PSI 0.1–0.2 → moderate shift (monitor)
+  # PSI > 0.2  → significant shift → retrain
+  psi:
+    enabled: true
+    threshold: 0.2      # retrain if PSI > this
+    bins: 10            # number of buckets for PSI calculation
+
+# MLflow experiment tracking
+mlflow:
+  tracking_uri: "http://mlflow:5000"   # used inside Docker network
+  local_uri: "http://localhost:5001"   # used when running locally
+  experiment_name: "pm25_prediction"

@@ -9,6 +9,10 @@ import json
 import joblib
 import numpy as np
 import pandas as pd
+import inspect
+import tempfile
+import mlflow
+import mlflow.sklearn
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
@@ -18,6 +22,7 @@ from data_loader import load_config, load_train_test_data
 from preprocessing import preprocess_pipeline
 from feature_engineering import build_features, get_feature_columns
 from evaluate import evaluate_model, print_metrics
+from lstm_model import train_lstm_with_tuning
 
 
 def get_model(name: str, params: dict = None):
@@ -98,28 +103,30 @@ def train_with_tuning(
     print(f"Training Candidate: {model_name}")
     print(f"{'=' * 50}")
 
-    # Handle None values in param grid (for max_depth)
-    clean_grid = {}
-    for k, v in param_grid.items():
-        if isinstance(v, list):
-            clean_grid[k] = [None if x is None else x for x in v]
-        else:
-            clean_grid[k] = v
+    # Pass random_state only to models that support it
+    model_cls = {"LinearRegression": LinearRegression, "Ridge": Ridge,
+                 "RandomForestRegressor": RandomForestRegressor, "XGBRegressor": XGBRegressor}[model_name]
+    init_params = {"random_state": random_state} if "random_state" in inspect.signature(model_cls).parameters else {}
+    base_model = get_model(model_name, init_params or None)
 
-    base_model = get_model(model_name)
-
-    # Use TimeSeriesSplit for cross-validation (respects temporal order)
     tscv = TimeSeriesSplit(n_splits=3)
 
     grid_search = GridSearchCV(
         estimator=base_model,
-        param_grid=clean_grid,
+        param_grid=param_grid.copy(),
         cv=tscv,
         scoring="neg_mean_absolute_error",
         n_jobs=-1,
         verbose=0,
+        return_train_score=True,
     )
     grid_search.fit(X_train, y_train)
+
+    # Log full CV results as MLflow artifact
+    cv_df = pd.DataFrame(grid_search.cv_results_)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", prefix=f"{model_name}_cv_", delete=False) as f:
+        cv_df.to_csv(f.name, index=False)
+        mlflow.log_artifact(f.name, artifact_path="cv_results")
 
     print(f"  Best params: {grid_search.best_params_}")
     print(f"  Best CV MAE: {-grid_search.best_score_:.4f}")
@@ -127,11 +134,22 @@ def train_with_tuning(
     return grid_search.best_estimator_, grid_search.best_params_
 
 
+def _setup_mlflow(config: dict):
+    tracking_uri = os.environ.get(
+        "MLFLOW_TRACKING_URI",
+        config.get("mlflow", {}).get("local_uri", "http://localhost:5000"),
+    )
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment(config.get("mlflow", {}).get("experiment_name", "pm25_prediction"))
+    print(f"MLflow tracking URI: {tracking_uri}")
+
+
 def train_all_models(config: dict):
     """
     Full training pipeline: load data, preprocess, engineer features,
     train all models, save results.
     """
+    _setup_mlflow(config)
     random_state = config.get("random_state", 42)
     np.random.seed(random_state)
 
@@ -178,47 +196,74 @@ def train_all_models(config: dict):
     os.makedirs(models_dir, exist_ok=True)
 
     # 1. Baseline: Linear Regression
-    baseline, baseline_name = train_baseline(X_train, y_train, config)
-    y_pred_baseline = baseline.predict(X_test)
-    metrics_baseline = evaluate_model(y_test, y_pred_baseline)
-    print_metrics(baseline_name, metrics_baseline)
-    joblib.dump(baseline, f"{models_dir}/baseline_linear_regression.joblib")
-    results.append({"model": "Linear Regression (Baseline)", **metrics_baseline})
+    with mlflow.start_run(run_name="LinearRegression"):
+        baseline, baseline_name = train_baseline(X_train, y_train, config)
+        y_pred_baseline = baseline.predict(X_test)
+        metrics_baseline = evaluate_model(y_test, y_pred_baseline)
+        print_metrics(baseline_name, metrics_baseline)
+        mlflow.log_params({"model_type": "LinearRegression"})
+        mlflow.log_metrics(metrics_baseline)
+        joblib.dump(baseline, f"{models_dir}/baseline_linear_regression.joblib")
+        results.append({"model": "Linear Regression (Baseline)", **metrics_baseline})
 
     # 2. Ridge Regression
     ridge_params = config["models"]["ridge"]["params"]
-    ridge_model, ridge_best = train_with_tuning(
-        "Ridge", ridge_params, X_train, y_train, random_state
-    )
-    y_pred_ridge = ridge_model.predict(X_test)
-    metrics_ridge = evaluate_model(y_test, y_pred_ridge)
-    print_metrics("Ridge Regression", metrics_ridge)
-    joblib.dump(ridge_model, f"{models_dir}/ridge_regression.joblib")
-    results.append({"model": "Ridge Regression", **metrics_ridge, "best_params": str(ridge_best)})
+    with mlflow.start_run(run_name="Ridge"):
+        ridge_model, ridge_best = train_with_tuning(
+            "Ridge", ridge_params, X_train, y_train, random_state
+        )
+        y_pred_ridge = ridge_model.predict(X_test)
+        metrics_ridge = evaluate_model(y_test, y_pred_ridge)
+        print_metrics("Ridge Regression", metrics_ridge)
+        mlflow.log_params(ridge_best)
+        mlflow.log_metrics(metrics_ridge)
+        joblib.dump(ridge_model, f"{models_dir}/ridge_regression.joblib")
+        results.append({"model": "Ridge Regression", **metrics_ridge, "best_params": str(ridge_best)})
 
     # 3. Random Forest
     rf_params = config["models"]["random_forest"]["params"].copy()
-    rf_rs = rf_params.pop("random_state", 42)
-    rf_model, rf_best = train_with_tuning(
-        "RandomForestRegressor", rf_params, X_train, y_train, random_state
-    )
-    y_pred_rf = rf_model.predict(X_test)
-    metrics_rf = evaluate_model(y_test, y_pred_rf)
-    print_metrics("Random Forest", metrics_rf)
-    joblib.dump(rf_model, f"{models_dir}/random_forest.joblib")
-    results.append({"model": "Random Forest", **metrics_rf, "best_params": str(rf_best)})
+    rf_params.pop("random_state", None)
+    with mlflow.start_run(run_name="RandomForest"):
+        rf_model, rf_best = train_with_tuning(
+            "RandomForestRegressor", rf_params, X_train, y_train, random_state
+        )
+        y_pred_rf = rf_model.predict(X_test)
+        metrics_rf = evaluate_model(y_test, y_pred_rf)
+        print_metrics("Random Forest", metrics_rf)
+        mlflow.log_params(rf_best)
+        mlflow.log_metrics(metrics_rf)
+        joblib.dump(rf_model, f"{models_dir}/random_forest.joblib")
+        results.append({"model": "Random Forest", **metrics_rf, "best_params": str(rf_best)})
 
     # 4. XGBoost
     xgb_params = config["models"]["xgboost"]["params"].copy()
-    xgb_rs = xgb_params.pop("random_state", 42)
-    xgb_model, xgb_best = train_with_tuning(
-        "XGBRegressor", xgb_params, X_train, y_train, random_state
-    )
-    y_pred_xgb = xgb_model.predict(X_test)
-    metrics_xgb = evaluate_model(y_test, y_pred_xgb)
-    print_metrics("XGBoost", metrics_xgb)
-    joblib.dump(xgb_model, f"{models_dir}/xgboost.joblib")
-    results.append({"model": "XGBoost", **metrics_xgb, "best_params": str(xgb_best)})
+    xgb_params.pop("random_state", None)
+    with mlflow.start_run(run_name="XGBoost"):
+        xgb_model, xgb_best = train_with_tuning(
+            "XGBRegressor", xgb_params, X_train, y_train, random_state
+        )
+        y_pred_xgb = xgb_model.predict(X_test)
+        metrics_xgb = evaluate_model(y_test, y_pred_xgb)
+        print_metrics("XGBoost", metrics_xgb)
+        mlflow.log_params(xgb_best)
+        mlflow.log_metrics(metrics_xgb)
+        joblib.dump(xgb_model, f"{models_dir}/xgboost.joblib")
+        results.append({"model": "XGBoost", **metrics_xgb, "best_params": str(xgb_best)})
+
+    # 5. LSTM
+    lstm_params = config["models"]["lstm"]["params"]
+    with mlflow.start_run(run_name="LSTM"):
+        lstm_model, lstm_best = train_lstm_with_tuning(X_train, y_train, lstm_params, random_state)
+        X_test_3d = X_test.reshape(X_test.shape[0], 1, X_test.shape[1]).astype(np.float32)
+        y_pred_lstm = lstm_model.predict(X_test_3d).flatten()
+        metrics_lstm = evaluate_model(y_test, y_pred_lstm)
+        print_metrics("LSTM", metrics_lstm)
+        mlflow.log_params(lstm_best)
+        mlflow.log_metrics(metrics_lstm)
+        import torch
+        torch.save(lstm_model.module_.state_dict(), f"{models_dir}/lstm.pt")
+        joblib.dump(lstm_model, f"{models_dir}/lstm.joblib")  # keep for ONNX export
+        results.append({"model": "LSTM", **metrics_lstm, "best_params": str(lstm_best)})
 
     # ---- Save results ----
     results_dir = config["output"]["results_dir"]

@@ -2,11 +2,69 @@
 
 A machine learning system for predicting PM2.5 (fine particulate matter) concentration levels using historical air quality monitoring data from Thailand's Pollution Control Department (กรมควบคุมมลพิษ).
 
-## Project Overview
+**Objective:** Predict next-day PM2.5 (µg/m³) for Station 10T, Bangkok using lag features, rolling statistics, and calendar features. Includes automated monitoring and retraining when model performance degrades.
 
-PM2.5 air pollution is a critical public health concern in Thailand, particularly during the dry season (November–April). This project builds a regression-based ML system to predict daily PM2.5 levels at monitoring stations, using historical patterns and time-series features.
+---
 
-**Objective:** Predict next-day PM2.5 concentration (µg/m³) for a given station using lag features, rolling statistics, and calendar features.
+## Quick Start
+
+### Step 1 — Start all services
+
+```bash
+docker compose up -d
+```
+
+Wait ~60 seconds for all services to initialize.
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Airflow UI | http://localhost:8080 | admin / admin |
+| MLflow UI | http://localhost:5001 | — |
+| Prediction API | http://localhost:8001 | — |
+| API Docs | http://localhost:8001/docs | — |
+
+### Step 2 — Train the initial model
+
+Go to **Airflow UI → DAGs → `pm25_training_pipeline` → trigger ▶**
+
+Or via CLI:
+```bash
+curl -X POST http://localhost:8080/api/v1/dags/pm25_training_pipeline/dagRuns \
+  -u admin:admin -H "Content-Type: application/json" \
+  -d '{"dag_run_id": "initial_train"}'
+```
+
+Training runs: feature engineering → Ridge, Random Forest, XGBoost, LSTM → evaluate → export ONNX.
+Check progress in Airflow grid view (~5–10 min). Results appear in MLflow at http://localhost:5001.
+
+### Step 3 — Test the full pipeline with mock data
+
+```bash
+# Normal mode — model stays healthy, no retrain triggered
+python scripts/mock_pipeline.py --mode normal --days 25
+
+# Degraded mode — MAE spikes 2–3×, auto-retrain triggered
+python scripts/mock_pipeline.py --mode degraded --days 25
+
+# Drift mode — gradual PM2.5 shift, PSI rises, may trigger retrain
+python scripts/mock_pipeline.py --mode drift --days 30
+```
+
+The script automatically:
+1. Generates mock PM2.5 data
+2. Sends predictions (`/predict`) + actuals (`/actual`) to the API
+3. Triggers `pm25_pipeline` monitoring DAG via Airflow REST API
+4. Polls until complete and prints MAE / PSI summary
+
+### Step 4 — Check monitoring results
+
+```bash
+cat results/monitoring_results.csv
+```
+
+Or in Airflow UI → `pm25_pipeline` → grid → `check_mae_and_psi` task → **XCom** tab.
+
+---
 
 ## Dataset
 
@@ -15,140 +73,219 @@ PM2.5 air pollution is a critical public health concern in Thailand, particularl
 | Source | กรมควบคุมมลพิษ (Pollution Control Department, Thailand) |
 | Files | `PM2.5(2024).xlsx` (training), `PM2.5(2025).xlsx` (testing) |
 | Stations | 96 monitoring stations across Thailand |
-| Granularity | Daily PM2.5 values per station |
+| Granularity | Daily PM2.5 per station |
 | Selected Station | **10T** — เคหะชุมชนคลองจั่น, เขตบางกะปิ, กทม. |
+
+---
 
 ## Repository Structure
 
 ```
 pm25-prediction-ml-system/
-├── README.md                         # This file
-├── .gitignore
-├── requirements.txt                  # Python dependencies
 ├── configs/
-│   └── config.yaml                   # Centralized configuration
+│   └── config.yaml                   # All parameters: models, monitoring, paths
+├── dags/
+│   ├── pm25_training_dag.py          # Training pipeline DAG
+│   └── pm25_pipeline_dag.py          # Unified monitoring + auto-retraining DAG
 ├── data/
-│   ├── raw/                          # Original Excel files
-│   │   ├── PM2.5(2024).xlsx          # Training data (year 2024)
-│   │   └── PM2.5(2025).xlsx          # Test data (year 2025)
-│   └── processed/                    # Cleaned CSV files
-├── notebooks/
-│   └── 01_eda.ipynb                  # Exploratory Data Analysis
-├── src/
-│   ├── __init__.py
-│   ├── data_loader.py                # Data loading utilities
-│   ├── preprocessing.py              # Missing value & outlier handling
-│   ├── feature_engineering.py        # Feature creation pipeline
-│   ├── train.py                      # Model training pipeline
-│   ├── evaluate.py                   # Evaluation metrics
-│   └── predict.py                    # Inference pipeline (separated)
-├── models/                           # Saved trained models (.joblib)
-├── reports/
-│   └── progress_report_1.md          # Progress Report 1
+│   ├── raw/                          # PM2.5(2024).xlsx, PM2.5(2025).xlsx
+│   └── processed/                    # Parquet files shared between Airflow tasks
+├── docker/
+│   └── init-db.sql                   # Postgres DB init (airflow + mlflow schemas)
+├── models/                           # Saved .joblib models, lstm.pt, feature_columns.json
+│   └── onnx/                         # ONNX-exported models
 ├── results/
-│   └── experiment_results.csv        # Model comparison metrics
+│   ├── experiment_results.csv        # Model comparison metrics
+│   ├── predictions_log.csv           # Logged predictions (written by /predict)
+│   ├── actuals_log.csv               # Logged actuals (written by /actual)
+│   └── monitoring_results.csv        # Monitoring run history
+├── scripts/
+│   ├── mock_pipeline.py              # All-in-one end-to-end test script
+│   ├── run_mock_pipeline.py          # CSV-based pipeline test
+│   └── generate_mock_data.py         # Generate mock CSV files
+├── src/
+│   ├── api.py                        # FastAPI service (/predict /actual /retrain)
+│   ├── data_loader.py                # Load Excel data per station
+│   ├── preprocessing.py              # ffill/bfill, clip [0, 500] µg/m³
+│   ├── feature_engineering.py        # 17 features with shift(1) to prevent leakage
+│   ├── train.py                      # GridSearchCV + TimeSeriesSplit training
+│   ├── evaluate.py                   # MAE, RMSE, R²
+│   ├── predict.py                    # CLI inference
+│   ├── monitor.py                    # MAE + PSI monitoring
+│   ├── lstm_model.py                 # PyTorch LSTM with skorch
+│   ├── export_onnx.py                # Export all models to ONNX
+│   └── predict_onnx.py               # ONNX inference
+├── Dockerfile                        # Airflow image
+├── Dockerfile.api                    # Lightweight API image
+├── docker-compose.yml                # Full stack
 └── tests/
-    └── test_preprocessing.py         # Unit tests
+    └── test_preprocessing.py
 ```
 
-## Installation
+---
+
+## API Reference
+
+### `GET /health`
+Liveness check.
+```json
+{"status": "ok"}
+```
+
+### `GET /model/info`
+Returns loaded model name and feature list.
+
+### `POST /predict`
+Send ≥15 days of PM2.5 history, get next-day forecast. Logs prediction to `predictions_log.csv`.
 
 ```bash
-# Clone the repository
-git clone <repo-url>
-cd pm25-prediction-ml-system
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # macOS/Linux
-
-# Install dependencies
-pip install -r requirements.txt
-
-# macOS only: XGBoost requires OpenMP
-brew install libomp
+curl -X POST http://localhost:8001/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "history": [
+      {"date": "2025-06-01", "pm25": 42.1},
+      {"date": "2025-06-02", "pm25": 38.5},
+      ...
+      {"date": "2025-06-15", "pm25": 36.8}
+    ]
+  }'
 ```
 
-## Usage
+```json
+{
+  "prediction_date": "2025-06-16",
+  "predicted_pm25": 34.21,
+  "unit": "µg/m³",
+  "model": "random_forest"
+}
+```
 
-### 1. Train All Models
+### `POST /actual`
+Record ground truth after measurement. Logs to `actuals_log.csv` and returns absolute error against the matched prediction.
 
 ```bash
-PYTHONPATH=src python src/train.py
+curl -X POST http://localhost:8001/actual \
+  -H "Content-Type: application/json" \
+  -d '{"date": "2025-06-16", "pm25_actual": 36.5}'
 ```
 
-This will:
-- Load and preprocess training data (2024) and test data (2025)
-- Engineer 17 time-series features
-- Train 4 models: Linear Regression, Ridge, Random Forest, XGBoost
-- Perform hyperparameter tuning with TimeSeriesSplit CV
-- Save models to `models/` and results to `results/`
-
-### 2. View Results
+### `POST /retrain`
+Joins prediction+actual logs, computes MAE, triggers Airflow DAG if MAE > threshold.
 
 ```bash
-PYTHONPATH=src python src/evaluate.py
+curl -X POST http://localhost:8001/retrain \
+  -H "Content-Type: application/json" \
+  -d '{"threshold": 6.0, "min_pairs": 7}'
 ```
 
-### 3. Run Inference
+---
 
-```bash
-PYTHONPATH=src python src/predict.py
+## Monitoring & Auto-Retraining
+
+The `pm25_pipeline` DAG runs daily at 01:00 UTC. It checks two metrics on the rolling 30-day window of matched prediction+actual pairs:
+
+| Metric | Threshold | Meaning |
+|--------|-----------|---------|
+| MAE | > 6.0 µg/m³ | Prediction accuracy degraded |
+| PSI | > 0.2 | Significant distribution shift |
+
+**PSI thresholds:**
+- PSI < 0.1 — stable
+- PSI 0.1–0.2 — moderate shift (monitor)
+- PSI > 0.2 — significant shift → retrain
+
+**DAG flow:**
+```
+pm25_pipeline (daily @ 01:00 UTC)
+  └── export_data
+        └── check_mae_and_psi
+              ├── needs_retrain → pm25_training_pipeline → clear_logs
+              └── healthy       → (no action)
 ```
 
-### 4. Run Tests
+After retraining, both log files are cleared so stale degraded data doesn't re-trigger retraining on the next run.
 
-```bash
-python tests/test_preprocessing.py
+Configure thresholds in `configs/config.yaml`:
+```yaml
+monitoring:
+  rolling_window_days: 30
+  min_evaluation_pairs: 7
+  mae:
+    enabled: true
+    threshold: 6.0
+  psi:
+    enabled: true
+    threshold: 0.2
+    bins: 10
 ```
+
+---
 
 ## Experiment Results
 
-Station: **10T** (เคหะชุมชนคลองจั่น, บางกะปิ, กทม.)
-Train: 2024 data (366 days) → Test: 2025 data (174 days after feature engineering)
+Station **10T** | Train: 2024 (359 days) → Test: 2025 (174 days)
 
 | Model | MAE | RMSE | R² |
 |-------|-----|------|----|
 | Linear Regression (Baseline) | 5.1348 | 6.7493 | 0.7726 |
-| Ridge Regression | 4.8286 | **6.5294** | **0.7871** |
-| Random Forest | **4.5702** | 6.5961 | 0.7828 |
+| Ridge Regression | 4.8286 | 6.5294 | 0.7871 |
+| **Random Forest** ⭐ | **4.5869** | 6.6809 | 0.7772 |
 | XGBoost | 4.9735 | 7.3464 | 0.7305 |
+| LSTM | 6.2156 | 8.2195 | 0.6627 |
 
-**Best Model:** Random Forest (lowest MAE = 4.57 µg/m³, best primary metric)
+**Best model:** Random Forest (MAE = 4.59 µg/m³) — used by default in the API.
+
+---
 
 ## Features (17 total)
 
 | Category | Features |
 |----------|----------|
-| Lag features | `pm25_lag_1`, `pm25_lag_2`, `pm25_lag_3`, `pm25_lag_5`, `pm25_lag_7` |
-| Rolling statistics | `pm25_rolling_mean_3/7/14`, `pm25_rolling_std_3/7/14` |
-| Time features | `day_of_week`, `month`, `day_of_year`, `is_weekend` |
-| Change features | `pm25_diff_1`, `pm25_pct_change_1` |
+| Lag | `pm25_lag_1/2/3/5/7` |
+| Rolling mean | `pm25_rolling_mean_3/7/14` |
+| Rolling std | `pm25_rolling_std_3/7/14` |
+| Time | `day_of_week`, `month`, `day_of_year`, `is_weekend` |
+| Change | `pm25_diff_1`, `pm25_pct_change_1` |
 
-## Configuration
+All features use `shift(1)` to prevent data leakage.
 
-All parameters are centralized in `configs/config.yaml`:
-- Station selection
-- Feature engineering settings (lag days, rolling windows)
-- Model hyperparameter grids
-- Data split dates
-- Output paths
+---
 
-## Model Versioning
+## Local Development (without Docker)
 
-- Trained models saved as `.joblib` files in `models/`
-- Feature columns saved as `models/feature_columns.json` for reproducible inference
-- Configuration tracked in `configs/config.yaml`
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+brew install libomp          # macOS only (XGBoost)
+
+# Start MLflow
+mlflow server --host 127.0.0.1 --port 5001 --backend-store-uri mlruns/ &
+
+# Train
+PYTHONPATH=src python src/train.py
+
+# Start API
+PYTHONPATH=src uvicorn src.api:app --host 0.0.0.0 --port 8001
+
+# Run tests
+python tests/test_preprocessing.py
+```
+
+---
 
 ## Tech Stack
 
-- **Python 3.14**
-- **pandas** / **numpy** — data manipulation
-- **scikit-learn** — ML models, evaluation, tuning
-- **XGBoost** — gradient boosting
-- **matplotlib** / **seaborn** — visualization
-- **PyYAML** — configuration management
-- **joblib** — model serialization
+| Layer | Tools |
+|-------|-------|
+| ML | scikit-learn, XGBoost, PyTorch, skorch |
+| Serving | FastAPI, uvicorn |
+| Orchestration | Apache Airflow (LocalExecutor) |
+| Experiment tracking | MLflow |
+| Infrastructure | Docker Compose, PostgreSQL |
+| Export | ONNX, onnxruntime |
+
+---
 
 ## License
 
