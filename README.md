@@ -16,12 +16,42 @@ docker compose up -d
 
 Wait ~60 seconds for all services to initialize.
 
+If you only want to test the hourly ingest DAG and skip the heavy ML/training packages in the Airflow image:
+
+```bash
+INSTALL_ML_DEPS=false docker compose up --build -d postgres airflow-init airflow-webserver airflow-scheduler
+```
+
+That lean mode is enough for `pm25_hourly_ingest`, but the training DAG will not work until you rebuild with `INSTALL_ML_DEPS=true`.
+
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | Airflow UI | http://localhost:8080 | admin / admin |
 | MLflow UI | http://localhost:5001 | — |
 | Prediction API | http://localhost:8001 | — |
 | API Docs | http://localhost:8001/docs | — |
+
+### PostgreSQL extension connection
+
+The Postgres container is exposed to your host so desktop SQL clients and VS Code/Cursor PostgreSQL extensions can connect using `localhost`.
+
+Recommended extension: Microsoft PostgreSQL for Visual Studio Code (`ms-ossdata.vscode-pgsql`).
+
+Use these connection profiles:
+
+| Profile | Host | Port | Database | User | Password |
+|---------|------|------|----------|------|----------|
+| PM25 app DB | `localhost` | `5432` | `pm25` | `postgres` | `postgres` |
+| Airflow metadata | `localhost` | `5432` | `airflow` | `airflow` | `airflow` |
+| MLflow backend | `localhost` | `5432` | `mlflow` | `mlflow` | `mlflow` |
+
+If port `5432` is already in use on your machine, start Compose with a different host port:
+
+```bash
+POSTGRES_PORT=5433 docker compose up -d postgres
+```
+
+Then point your extension to `localhost:5433`.
 
 ### Step 2 — Train the initial model
 
@@ -176,6 +206,116 @@ Joins prediction+actual logs, computes MAE, triggers Airflow DAG if MAE > thresh
 curl -X POST http://localhost:8001/retrain \
   -H "Content-Type: application/json" \
   -d '{"threshold": 6.0, "min_pairs": 7}'
+```
+
+---
+
+## Hourly Data Ingestion Pipeline
+
+The `pm25_hourly_ingest` DAG runs every hour to pull fresh PM2.5 + meteorological data from AirBKK API and store it in PostgreSQL.
+
+**Schedule:** Hourly at minute 0 (0 * * * *)  
+**Grace period:** 15 minutes after hour boundary  
+**SLA:** Must complete within 10 minutes  
+
+### DAG Flow
+
+```
+pm25_hourly_ingest (hourly @ :00)
+  └── fetch_data
+      └── validate_data
+          └── store_data
+              └── log_metrics
+```
+
+### Data Validation
+
+- **Range checks:**
+  - PM2.5: [0, 500] µg/m³
+  - PM10: [0, 1000] µg/m³
+  - Temp: [-10, 60]°C
+  - RH: [0, 100]%
+  - Wind speed: [0, 30] m/s
+- **Duplicate detection:** Unique constraint on (station_id, timestamp)
+- **Null handling:** Logged but not rejected (safe for forecasting)
+
+### Metrics & Monitoring
+
+The DAG logs hourly metrics to `results/hourly_ingestion_metrics.csv`:
+
+```csv
+execution_date,fetched_records,validation_failures,stored_records,duplicates_skipped,validation_pass_rate,timestamp
+2026-04-09T14:00:00,5,0,5,0,1.0,2026-04-09T14:05:23.123Z
+```
+
+**Data Quality Checks:**
+- Null rate (failures if > 50%)
+- Outlier detection (> mean + 2σ)
+- Sensor drift vs 7-day baseline
+- API health (expected rows per hour)
+
+### Test Locally
+
+```bash
+# Initialize database and run all tests
+python scripts/test_hourly_dag.py --all
+
+# Or step-by-step
+python scripts/test_hourly_dag.py --setup     # Create pm25 database
+python scripts/test_hourly_dag.py --verify    # Check DAG syntax
+python scripts/test_hourly_dag.py --mock      # Run mock ingestion
+```
+
+### PostgreSQL Schema
+
+**Table:** `pm25_raw_hourly`
+
+```sql
+CREATE TABLE pm25_raw_hourly (
+    id SERIAL PRIMARY KEY,
+    station_id INT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    pm25 FLOAT,
+    pm10 FLOAT,
+    temp FLOAT,
+    rh FLOAT,
+    ws FLOAT,
+    wd FLOAT,
+    ingestion_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(station_id, timestamp),
+    CHECK (pm25 >= 0 AND pm25 <= 500)
+);
+
+-- Indexes for fast queries
+CREATE INDEX idx_station_timestamp ON pm25_raw_hourly(station_id, timestamp DESC);
+CREATE INDEX idx_timestamp ON pm25_raw_hourly(timestamp DESC);
+```
+
+### Query Recent Data
+
+```bash
+# Get latest 24 hours for station 145
+psql -U postgres -d pm25 -c "
+SELECT station_id, timestamp, pm25, temp, rh
+FROM pm25_raw_hourly
+WHERE station_id = 145 AND timestamp > NOW() - INTERVAL '24 hours'
+ORDER BY timestamp DESC
+LIMIT 24;
+"
+
+# Calculate 7-day rolling mean for drift detection
+psql -U postgres -d pm25 -c "
+SELECT 
+    station_id,
+    DATE_TRUNC('day', timestamp) as date,
+    AVG(pm25) as pm25_daily_mean,
+    STDDEV(pm25) as pm25_daily_std,
+    COUNT(*) as record_count
+FROM pm25_raw_hourly
+WHERE timestamp > NOW() - INTERVAL '7 days'
+GROUP BY station_id, DATE_TRUNC('day', timestamp)
+ORDER BY station_id, date DESC;
+"
 ```
 
 ---
