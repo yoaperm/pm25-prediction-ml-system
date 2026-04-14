@@ -22,7 +22,7 @@ Features:
   - SLA monitoring: must complete within 10 min of hour boundary
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.empty import EmptyOperator
@@ -58,65 +58,51 @@ dag = DAG(
 # ── Task 1: Fetch data from AirBKK API ────────────────────────────────────
 def _fetch_data(**context):
     """
-    Fetch hourly PM2.5 + meteorological data from AirBKK API.
+    Fetch one hourly PM2.5 + meteorological snapshot from AirBKK.
     Returns: list of dicts with station_id, timestamp, pm25, pm10, temp, rh, ws, wd
     """
     import sys
     sys.path.insert(0, SRC)
     
-    import requests
-    import json
-    from datetime import datetime, timedelta
+    from airbkk_client import AirBKKClient, BANGKOK_TZ
     
-    execution_date = context["execution_date"]
+    execution_date = context.get("data_interval_start") or context["execution_date"]
     ti = context["ti"]
+
+    if execution_date.tzinfo is None:
+        execution_date = execution_date.replace(tzinfo=timezone.utc)
+
+    target_hour = execution_date.astimezone(BANGKOK_TZ).replace(
+        minute=0,
+        second=0,
+        microsecond=0,
+        tzinfo=None,
+    )
     
-    logger.info(f"[fetch] Starting data fetch for execution_date={execution_date}")
-    
-    # Placeholder: Mock API response (replace with real API endpoint)
-    # In production, this would call: https://api.airbkk.com/data/hourly (TBD)
+    logger.info(
+        "[fetch] Starting AirBKK fetch for execution_date=%s target_hour=%s",
+        execution_date.isoformat(),
+        target_hour.isoformat(),
+    )
+
     try:
-        # For now, return mock data structure to enable testing
-        mock_data = {
-            "data": [
-                {
-                    "station_id": 145,
-                    "timestamp": execution_date.isoformat(),
-                    "pm25": 35.2,
-                    "pm10": 55.4,
-                    "temp": 28.5,
-                    "rh": 72.0,
-                    "ws": 1.2,
-                    "wd": 180.0,
-                },
-                {
-                    "station_id": 10,
-                    "timestamp": execution_date.isoformat(),
-                    "pm25": 42.1,
-                    "pm10": 62.3,
-                    "temp": 29.0,
-                    "rh": 70.0,
-                    "ws": 1.5,
-                    "wd": 175.0,
-                },
-            ]
-        }
-        
-        records = mock_data.get("data", [])
-        logger.info(f"[fetch] Fetched {len(records)} records")
+        client = AirBKKClient(timeout=90)
+        records = client.get_hourly_records(target_hour)
+
+        logger.info("[fetch] Fetched %s records from AirBKK", len(records))
+        if not records:
+            logger.warning("[fetch] AirBKK returned no records for target_hour=%s", target_hour.isoformat())
         
         # Push to XCom for downstream tasks
         ti.xcom_push(key="fetched_records", value=records)
         ti.xcom_push(key="fetch_count", value=len(records))
+        ti.xcom_push(key="fetch_target_hour", value=target_hour.isoformat())
         
         return {"status": "success", "record_count": len(records)}
         
-    except requests.exceptions.RequestException as e:
-        logger.error(f"[fetch] API request failed: {e}")
-        ti.xcom_push(key="fetch_error", value=str(e))
-        raise
     except Exception as e:
         logger.error(f"[fetch] Unexpected error: {e}")
+        ti.xcom_push(key="fetch_error", value=str(e))
         raise
 
 

@@ -80,11 +80,18 @@ class PM25Database:
         CREATE INDEX IF NOT EXISTS idx_timestamp 
             ON pm25_raw_hourly(timestamp DESC);
         """
+
+        alter_sql = """
+        ALTER TABLE pm25_raw_hourly
+        ALTER COLUMN ingestion_time
+        SET DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 hours');
+        """
         
         try:
             cur = self.conn.cursor()
             cur.execute(create_sql)
             cur.execute(index_sql)
+            cur.execute(alter_sql)
             self.conn.commit()
             logger.info("pm25_raw_hourly table and indexes ensured")
             cur.close()
