@@ -118,6 +118,24 @@ services:
       AIRFLOW_USER: admin
       AIRFLOW_PASSWORD: admin
       MAE_THRESHOLD: "6.0"
+      API_KEY: ${API_KEY:-foonalert-secret-key}
+    restart: unless-stopped
+
+  # --- Streamlit Dashboard ---
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./results:/app/results
+    environment:
+      API_URL: http://api:8000
+      API_KEY: ${API_KEY:-foonalert-secret-key}
+      RESULTS_DIR: /app/results
+    depends_on:
+      - api
     restart: unless-stopped
 
 # -----------------------------------------------------------------------
