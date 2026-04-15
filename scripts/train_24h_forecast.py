@@ -8,9 +8,9 @@ Data source: PostgreSQL table pm25_raw_hourly
   Columns: station_id, timestamp, pm25
 
 Dynamic date splits (relative to today):
-  ├── Train : today - 3y  →  today - 6m   (~2y 6m)
-  ├── Val   : today - 6m  →  today - 3m   (3 months)
-  └── Test  : today - 3m  →  today        (3 months, latest)
+  ├── Train : today - 3y6m  →  today - 6m   (3 years)
+  ├── Val   : today - 6m    →  today - 3m   (3 months)
+  └── Test  : today - 3m    →  today        (3 months, latest)
 
 Val is used for LSTM early-stopping. GridSearchCV uses TimeSeriesSplit on train only.
 
@@ -72,7 +72,7 @@ def get_splits():
        (now-3y)              (now-6m)       (now-3m)
     """
     today      = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    data_start = today - relativedelta(years=3)
+    data_start = today - relativedelta(years=3, months=6)
     val_start  = today - relativedelta(months=6)
     test_start = today - relativedelta(months=3)
 
