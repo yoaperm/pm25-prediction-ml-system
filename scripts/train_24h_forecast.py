@@ -69,7 +69,7 @@ def get_splits():
 
     Timeline:
       data_start ──── train ────── val_start ── val ── test_start ── test ── today
-       (now-3y)              (now-6m)       (now-3m)
+       (now-3y6m)            (now-6m)       (now-3m)
     """
     today      = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     data_start = today - relativedelta(years=3, months=6)
@@ -111,7 +111,7 @@ def load_station_hourly(station_id: int, db_url: str, data_start: str) -> pd.Dat
     if df.empty:
         return df
 
-    df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_localize(None)
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_convert(None)
     df = df.sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
 
     # Fill complete hourly range
