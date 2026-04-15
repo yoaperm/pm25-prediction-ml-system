@@ -22,7 +22,8 @@ jobs:
         run: |
           ssh -i key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
             cd ~/pm25-prediction-ml-system
+            sudo systemctl start docker
             git pull
-            sudo docker-compose down
-            sudo docker-compose up -d --build
+            sudo docker compose down
+            sudo docker compose up -d --build
           EOF
