@@ -7,7 +7,8 @@ Usage:
     PYTHONPATH=src python src/export_onnx.py              # convert all
     PYTHONPATH=src python src/export_onnx.py --model lstm # single model
 """
-import argparse, os
+import argparse
+import os
 import joblib
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType

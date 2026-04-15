@@ -185,9 +185,9 @@ def train_all_models(config: dict):
     val_start = config["split"]["validation_start"]
     val_mask = train_feat["date"] >= val_start
     X_train_sub = train_feat[~val_mask][feature_cols].values
-    y_train_sub = train_feat[~val_mask]["pm25"].values
+    # y_train_sub = train_feat[~val_mask]["pm25"].values
     X_val = train_feat[val_mask][feature_cols].values
-    y_val = train_feat[val_mask]["pm25"].values
+    # y_val = train_feat[val_mask]["pm25"].values
     print(f"\nTrain subset: {X_train_sub.shape}, Validation: {X_val.shape}")
 
     # ---- Train models ----

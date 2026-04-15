@@ -6,7 +6,9 @@ Run PM2.5 predictions via ONNX Runtime (no TF/sklearn required at inference).
 Usage:
     PYTHONPATH=src python src/predict_onnx.py [--model NAME] [--input FILE] [--output FILE]
 """
-import argparse, json, os
+import argparse
+import json
+import os
 import numpy as np
 import pandas as pd
 import onnxruntime as rt

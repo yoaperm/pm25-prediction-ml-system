@@ -12,7 +12,7 @@ import pandas as pd
 
 from data_loader import load_config
 from preprocessing import preprocess_pipeline
-from feature_engineering import build_features, get_feature_columns
+from feature_engineering import build_features
 
 
 def load_model(model_path: str):

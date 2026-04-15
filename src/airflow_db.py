@@ -111,21 +111,18 @@ class PM25Database:
             raise
     
     def _prepare_record_values(self, records: List[Dict]) -> List[Tuple]:
-        return [
-            (
-                record.get("station_id"),
-                record.get("station_name"),
-                record.get("station_name_en"),
-                record.get("timestamp"),
-                record.get("pm25"),
-                record.get("pm10"),
-                record.get("temp"),
-                record.get("rh"),
-                record.get("ws"),
-                record.get("wd"),
-            )
-            for record in records
-        ]
+    values = [
+        (
+            r["station_id"],
+            r["datetime"].rstrip("Z"),
+            r["pm25"],
+            r["temp"],
+            r["humid"],
+            r["lat"],
+            r["lon"],
+        )
+        for r in records
+    ]
 
     def insert_records(self, records: List[Dict], commit: bool = True) -> Tuple[int, int]:
         """

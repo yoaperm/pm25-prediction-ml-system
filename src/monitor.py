@@ -15,7 +15,6 @@ Usage (standalone):
     PYTHONPATH=src python src/monitor.py
 """
 
-import json
 import os
 import sys
 import datetime
