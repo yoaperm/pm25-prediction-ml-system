@@ -12,7 +12,6 @@ Usage:
 import argparse
 import sys
 import logging
-from datetime import datetime
 from pathlib import Path
 
 logging.basicConfig(
@@ -101,8 +100,7 @@ def run_mock_ingestion():
     
     try:
         from airflow_db import get_db_connection
-        from datetime import datetime, timedelta
-        import json
+        from datetime import datetime
         
         # Create mock records
         now = datetime.utcnow()
@@ -135,7 +133,7 @@ def run_mock_ingestion():
         
         # Verify data
         count = db.get_row_count()
-        logger.info(f"✅ Mock ingestion complete:")
+        logger.info("✅ Mock ingestion complete:")
         logger.info(f"   - Records inserted: {stored}")
         logger.info(f"   - Duplicates skipped: {duplicates}")
         logger.info(f"   - Total rows in table: {count}")

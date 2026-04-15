@@ -263,7 +263,7 @@ def page_monitoring():
 
             # Retrain events
             if "retrain_triggered" in mon_df.columns:
-                retrain_events = mon_df[mon_df["retrain_triggered"] == True]
+                retrain_events = mon_df[mon_df["retrain_triggered"]]
                 if not retrain_events.empty:
                     st.warning(f"⚠️ **{len(retrain_events)} retrain(s) triggered** in monitoring history")
                     st.dataframe(retrain_events, use_container_width=True)
