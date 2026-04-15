@@ -4,6 +4,7 @@ A machine learning system for predicting PM2.5 (fine particulate matter) concent
 
 **Objective:** Predict next-day PM2.5 (µg/m³) for Station 10T, Bangkok using lag features, rolling statistics, and calendar features. Includes automated monitoring and retraining when model performance degrades.
 
+Group: Software ML
 ---
 
 ## Quick Start
