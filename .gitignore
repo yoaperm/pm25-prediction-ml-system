@@ -27,7 +27,16 @@ env/
 Thumbs.db
 
 resources/
+
 # Agent workspace: local development only (design notes, task tracking)
 .agent/*
 .github/agents/*
 # Official agents in .github/agents/ are COMMITTED to git
+
+# Data, models, results — do not commit large/binary files
+data/
+models/
+results/
+triton_model_repo/
+mlflow.db
+mlruns/

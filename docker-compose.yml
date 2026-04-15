@@ -17,6 +17,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /app/dags
     MLFLOW_TRACKING_URI: http://mlflow:5000
+    PM25_DB_URL: ${PM25_DB_URL:-postgresql://postgres:postgres@postgres:5432/pm25}
   volumes:
     - ./dags:/app/dags
     - ./src:/app/src
@@ -107,6 +108,30 @@ services:
       - mlflow
     restart: unless-stopped
 
+  # --- Triton Inference Server ---
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.08-py3
+    command: >
+      tritonserver
+      --model-repository=/models
+      --model-control-mode=poll
+      --repository-poll-secs=30
+      --log-verbose=0
+    ports:
+      - "8010:8000"   # HTTP inference
+      - "8011:8001"   # gRPC inference
+      - "8012:8002"   # metrics
+    volumes:
+      - ./triton_model_repo:/models
+    shm_size: "256m"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
   # --- PM2.5 Prediction API ---
   api:
     build:
@@ -124,6 +149,11 @@ services:
       AIRFLOW_PASSWORD: admin
       MAE_THRESHOLD: "6.0"
       API_KEY: ${API_KEY:-foonalert-secret-key}
+      INFERENCE_BACKEND: triton
+      TRITON_URL: triton:8000
+    depends_on:
+      triton:
+        condition: service_healthy
     restart: unless-stopped
 
   # --- Streamlit Dashboard ---

@@ -3,8 +3,8 @@
 
 # Data paths
 data:
-  train_file: "data/raw/PM2.5(2024).xlsx"
-  test_file: "data/raw/PM2.5(2025).xlsx"
+  train_file: "data/raw/archived/PM2.5(2024).xlsx"
+  test_file: "data/raw/archived/PM2.5(2025).xlsx"
   train_sheet: "Data"
   test_sheet: "DATA"
   metadata_sheet: "รายละเอียดจุดตรวจวัด"
