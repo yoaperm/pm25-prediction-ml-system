@@ -339,9 +339,14 @@ def train_station_24h(station_id: int):
             sess     = rt.InferenceSession(onnx_prod, providers=["CPUExecutionProvider"])
             in_name  = sess.get_inputs()[0].name
             out_name = sess.get_outputs()[0].name
-            X_in     = X_test_3d if old_info.get("is_lstm") else X_test
+            X_in       = X_test_3d if old_info.get("is_lstm") else X_test
             preds_prod = sess.run([out_name], {in_name: X_in})[0].flatten()
-            prod_mae   = evaluate_model(y_test, preds_prod)["MAE"]
+            if preds_prod.shape[0] != y_test.shape[0]:
+                # Old model was multi-output — incompatible, treat as first deploy
+                print("  Prod model is multi-output (incompatible) — treating as first deploy")
+                old_info = None
+            else:
+                prod_mae = evaluate_model(y_test, preds_prod)["MAE"]
 
     prod_str = (f"MAE={prod_mae:.4f}  ({old_info['train_start']} → {old_info['train_end']})"
                 if prod_mae is not None else "N/A (first deploy)")
