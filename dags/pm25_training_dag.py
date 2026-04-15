@@ -1,3 +1,7 @@
+# ── DISABLED ─────────────────────────────────────────────────────────────────
+# Not in use — replaced by pm25_24h_training + pm25_24h_pipeline (PostgreSQL).
+# Listed in dags/.airflowignore so Airflow will not load this file.
+# ─────────────────────────────────────────────────────────────────────────────
 """
 PM2.5 Training Pipeline DAG
 ============================
