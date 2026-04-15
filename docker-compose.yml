@@ -17,6 +17,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /app/dags
     MLFLOW_TRACKING_URI: http://mlflow:5000
+    PM25_DB_URL: ${PM25_DB_URL:-postgresql://postgres:postgres@postgres:5432/pm25}
   volumes:
     - ./dags:/app/dags
     - ./src:/app/src
