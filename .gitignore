@@ -33,6 +33,10 @@ resources/
 .github/agents/*
 # Official agents in .github/agents/ are COMMITTED to git
 
+# Environment — contains secrets/local config
+.env
+.env.local
+
 # Data, models, results — do not commit large/binary files
 data/
 models/

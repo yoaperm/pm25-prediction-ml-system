@@ -92,17 +92,20 @@ def _load_hourly_from_pg(station_id, db_url, data_start):
     import pandas as pd
     import sqlalchemy
 
+    from sqlalchemy import text
+
     engine = sqlalchemy.create_engine(db_url)
-    query  = """
+    query  = text("""
         SELECT timestamp AS datetime, pm25
         FROM   pm25_raw_hourly
-        WHERE  station_id = %(station_id)s
-          AND  timestamp  >= %(data_start)s
+        WHERE  station_id = :station_id
+          AND  timestamp  >= :data_start
           AND  pm25       IS NOT NULL
         ORDER  BY timestamp
-    """
-    df = pd.read_sql(query, engine,
-                     params={"station_id": station_id, "data_start": data_start})
+    """)
+    with engine.connect() as conn:
+        result = conn.execute(query, {"station_id": station_id, "data_start": data_start})
+        df = pd.DataFrame(result.fetchall(), columns=result.keys())
     engine.dispose()
 
     if df.empty:
@@ -253,7 +256,7 @@ def _train_linear(**context):
 
     station_id = _station_id(context)
     _setup_mlflow(station_id)
-    X_train, y_train, _, _, X_test, y_test, _ = _load_arrays(station_id)
+    X_train, y_train, _, _, X_test, y_test, meta = _load_arrays(station_id)
 
     with mlflow.start_run(run_name="LinearRegression_24h"):
         model = LinearRegression().fit(X_train, y_train)
@@ -265,7 +268,8 @@ def _train_linear(**context):
     from export_onnx import export_sklearn
     export_sklearn(model, "linear_regression",
                    _models_dir(station_id),
-                   output_path=_tmp_onnx(station_id, "linear_regression"))
+                   output_path=_tmp_onnx(station_id, "linear_regression"),
+                   n_features=meta["n_features"])
     print(f"  LinearRegression  MAE={metrics['MAE']:.4f}")
 
 
@@ -280,7 +284,7 @@ def _train_ridge(**context):
 
     station_id = _station_id(context)
     _setup_mlflow(station_id)
-    X_train, y_train, _, _, X_test, y_test, _ = _load_arrays(station_id)
+    X_train, y_train, _, _, X_test, y_test, meta = _load_arrays(station_id)
 
     n_jobs = int(os.environ.get("GRID_N_JOBS", "-1"))
     grid   = GridSearchCV(Ridge(), {"alpha": [0.1, 1.0, 10.0, 100.0]},
@@ -296,7 +300,8 @@ def _train_ridge(**context):
 
     export_sklearn(model, "ridge_regression",
                    _models_dir(station_id),
-                   output_path=_tmp_onnx(station_id, "ridge_regression"))
+                   output_path=_tmp_onnx(station_id, "ridge_regression"),
+                   n_features=meta["n_features"])
     print(f"  Ridge  MAE={metrics['MAE']:.4f}  alpha={grid.best_params_['alpha']}")
 
 
@@ -311,7 +316,7 @@ def _train_random_forest(**context):
 
     station_id = _station_id(context)
     _setup_mlflow(station_id)
-    X_train, y_train, _, _, X_test, y_test, _ = _load_arrays(station_id)
+    X_train, y_train, _, _, X_test, y_test, meta = _load_arrays(station_id)
 
     n_jobs = int(os.environ.get("GRID_N_JOBS", "-1"))
     grid   = GridSearchCV(
@@ -330,7 +335,8 @@ def _train_random_forest(**context):
 
     export_sklearn(model, "random_forest",
                    _models_dir(station_id),
-                   output_path=_tmp_onnx(station_id, "random_forest"))
+                   output_path=_tmp_onnx(station_id, "random_forest"),
+                   n_features=meta["n_features"])
     print(f"  RandomForest  MAE={metrics['MAE']:.4f}  params={grid.best_params_}")
 
 
@@ -379,9 +385,7 @@ def _train_lstm(**context):
     import torch
     import torch.nn as nn
     import numpy as np
-    from skorch import NeuralNetRegressor
-    from skorch.callbacks import EarlyStopping
-    from skorch.dataset import Dataset
+    from torch.utils.data import DataLoader, TensorDataset
     import sys; sys.path.insert(0, SRC)
     from evaluate import evaluate_model
 
@@ -390,9 +394,7 @@ def _train_lstm(**context):
     X_train, y_train, X_val, y_val, X_test, y_test, meta = _load_arrays(station_id)
 
     torch.set_num_threads(1)
-    device = "cpu" if os.environ.get("PYTORCH_DEVICE") == "cpu" else (
-        "mps" if torch.backends.mps.is_available() else "cpu"
-    )
+    device_str = "cpu"
     n_features = meta["n_features"]
 
     class LSTMForecast(nn.Module):
@@ -405,35 +407,55 @@ def _train_lstm(**context):
 
         def forward(self, x):
             out, _ = self.lstm(x)
-            return self.fc(out[:, -1, :])   # (batch, 1)
+            return self.fc(out[:, -1, :]).squeeze(-1)   # (batch,)
 
     # Subsample training rows (consecutive hours are highly correlated)
-    X_lstm     = X_train[::4].reshape(-1, 1, n_features).astype("float32")
-    y_lstm     = y_train[::4].reshape(-1, 1).astype("float32")
-    X_val_3d   = X_val.reshape(-1, 1, n_features).astype("float32")
-    y_val_3d   = y_val.reshape(-1, 1).astype("float32")
+    X_tr = torch.FloatTensor(X_train[::4].reshape(-1, 1, n_features))
+    y_tr = torch.FloatTensor(y_train[::4])
+    X_vl = torch.FloatTensor(X_val.reshape(-1, 1, n_features))
+    y_vl = torch.FloatTensor(y_val)
 
-    val_dataset = Dataset(X_val_3d, y_val_3d)
+    train_loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=512, shuffle=False)
 
-    net = NeuralNetRegressor(
-        module=LSTMForecast,
-        module__input_size=n_features,
-        criterion=nn.L1Loss,
-        optimizer=torch.optim.Adam,
-        optimizer__lr=0.001,
-        max_epochs=30,
-        batch_size=512,
-        train_split=lambda X, y: (Dataset(X, y), val_dataset),
-        device=device,
-        verbose=0,
-        iterator_train__num_workers=0,
-        iterator_valid__num_workers=0,
-        callbacks=[EarlyStopping(patience=5, monitor="valid_loss")],
-    )
-    net.fit(X_lstm, y_lstm)
+    lstm_model = LSTMForecast(input_size=n_features).to(device_str)
+    optimizer  = torch.optim.Adam(lstm_model.parameters(), lr=0.001)
+    criterion  = nn.L1Loss()
 
-    X_test_3d = X_test.reshape(-1, 1, n_features).astype("float32")
-    metrics   = evaluate_model(y_test, net.predict(X_test_3d).flatten())
+    best_val_loss = float("inf")
+    patience_left = 5
+    best_state    = None
+    epochs_done   = 0
+
+    for epoch in range(30):
+        lstm_model.train()
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device_str), yb.to(device_str)
+            optimizer.zero_grad()
+            loss = criterion(lstm_model(xb), yb)
+            loss.backward()
+            optimizer.step()
+
+        lstm_model.eval()
+        with torch.no_grad():
+            val_loss = criterion(lstm_model(X_vl.to(device_str)), y_vl.to(device_str)).item()
+
+        epochs_done = epoch + 1
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state    = {k: v.clone() for k, v in lstm_model.state_dict().items()}
+            patience_left = 5
+        else:
+            patience_left -= 1
+            if patience_left == 0:
+                break
+
+    lstm_model.load_state_dict(best_state)
+
+    X_test_3d = torch.FloatTensor(X_test.reshape(-1, 1, n_features)).to(device_str)
+    lstm_model.eval()
+    with torch.no_grad():
+        y_pred = lstm_model(X_test_3d).cpu().numpy().flatten()
+    metrics = evaluate_model(y_test, y_pred)
 
     with mlflow.start_run(run_name="LSTM_24h"):
         mlflow.log_params({"hidden_size": 64, "dropout": 0.1, "lr": 0.001,
@@ -441,17 +463,16 @@ def _train_lstm(**context):
         mlflow.log_metrics(metrics)
 
     # Export LSTM to ONNX
-    pytorch_model = net.module_
-    pytorch_model.eval()
+    lstm_model.eval()
     dummy = torch.zeros(1, 1, n_features)
     torch.onnx.export(
-        pytorch_model, dummy, _tmp_onnx(station_id, "lstm"),
+        lstm_model, dummy, _tmp_onnx(station_id, "lstm"),
         input_names=["lstm_input"],
         output_names=["output"],
         dynamic_axes={"lstm_input": {0: "batch"}, "output": {0: "batch"}},
         opset_version=17,
     )
-    print(f"  LSTM  MAE={metrics['MAE']:.4f}  epochs={len(net.history)}  device={device}")
+    print(f"  LSTM  MAE={metrics['MAE']:.4f}  epochs={epochs_done}  device={device_str}")
 
 
 # ── Task 3: Evaluate all 5 temp models ───────────────────────────────────────

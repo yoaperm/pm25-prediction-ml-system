@@ -60,18 +60,20 @@ def _get_threshold(name, default):
 def _load_hourly_from_pg(station_id, db_url, data_start):
     import pandas as pd
     import sqlalchemy
+    from sqlalchemy import text
 
     engine = sqlalchemy.create_engine(db_url)
-    query  = """
+    query  = text("""
         SELECT timestamp AS datetime, pm25
         FROM   pm25_raw_hourly
-        WHERE  station_id = %(station_id)s
-          AND  timestamp  >= %(data_start)s
+        WHERE  station_id = :station_id
+          AND  timestamp  >= :data_start
           AND  pm25       IS NOT NULL
         ORDER  BY timestamp
-    """
-    df = pd.read_sql(query, engine,
-                     params={"station_id": station_id, "data_start": data_start})
+    """)
+    with engine.connect() as conn:
+        result = conn.execute(query, {"station_id": station_id, "data_start": data_start})
+        df = pd.DataFrame(result.fetchall(), columns=result.keys())
     engine.dispose()
 
     if df.empty:
