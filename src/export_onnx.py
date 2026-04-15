@@ -16,7 +16,7 @@ from onnxmltools.convert import convert_xgboost
 from onnxmltools.convert.common.data_types import FloatTensorType as OmtFloatTensorType
 from data_loader import load_config
 
-N_FEATURES = 17
+N_FEATURES = 17  # default for station 10T daily forecast
 
 SKLEARN_MODELS = {
     "baseline_linear_regression": "baseline_linear_regression.joblib",
@@ -24,27 +24,27 @@ SKLEARN_MODELS = {
     "random_forest":              "random_forest.joblib",
 }
 
-def export_sklearn(model, name, onnx_dir, output_path=None):
-    initial_type = [("float_input", FloatTensorType([None, N_FEATURES]))]
+def export_sklearn(model, name, onnx_dir, output_path=None, n_features=N_FEATURES):
+    initial_type = [("float_input", FloatTensorType([None, n_features]))]
     onnx_model = convert_sklearn(model, initial_types=initial_type, target_opset=17)
     path = output_path or os.path.join(onnx_dir, f"{name}.onnx")
     with open(path, "wb") as f:
         f.write(onnx_model.SerializeToString())
     print(f"  Saved: {path}")
 
-def export_xgboost(model, onnx_dir, output_path=None):
-    initial_type = [("float_input", OmtFloatTensorType([None, N_FEATURES]))]
+def export_xgboost(model, onnx_dir, output_path=None, n_features=N_FEATURES):
+    initial_type = [("float_input", OmtFloatTensorType([None, n_features]))]
     onnx_model = convert_xgboost(model, initial_types=initial_type)
     path = output_path or os.path.join(onnx_dir, "xgboost.onnx")
     with open(path, "wb") as f:
         f.write(onnx_model.SerializeToString())
     print(f"  Saved: {path}")
 
-def export_lstm(model, onnx_dir, output_path=None):
+def export_lstm(model, onnx_dir, output_path=None, n_features=N_FEATURES):
     import torch
     pytorch_model = model.module_   # unwrap skorch wrapper
     pytorch_model.eval()
-    dummy = torch.zeros(1, 1, N_FEATURES)
+    dummy = torch.zeros(1, 1, n_features)
     path = output_path or os.path.join(onnx_dir, "lstm.onnx")
     torch.onnx.export(
         pytorch_model,

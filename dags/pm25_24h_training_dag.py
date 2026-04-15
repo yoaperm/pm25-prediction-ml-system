@@ -256,7 +256,7 @@ def _train_linear(**context):
 
     station_id = _station_id(context)
     _setup_mlflow(station_id)
-    X_train, y_train, _, _, X_test, y_test, _ = _load_arrays(station_id)
+    X_train, y_train, _, _, X_test, y_test, meta = _load_arrays(station_id)
 
     with mlflow.start_run(run_name="LinearRegression_24h"):
         model = LinearRegression().fit(X_train, y_train)
@@ -268,7 +268,8 @@ def _train_linear(**context):
     from export_onnx import export_sklearn
     export_sklearn(model, "linear_regression",
                    _models_dir(station_id),
-                   output_path=_tmp_onnx(station_id, "linear_regression"))
+                   output_path=_tmp_onnx(station_id, "linear_regression"),
+                   n_features=meta["n_features"])
     print(f"  LinearRegression  MAE={metrics['MAE']:.4f}")
 
 
@@ -283,7 +284,7 @@ def _train_ridge(**context):
 
     station_id = _station_id(context)
     _setup_mlflow(station_id)
-    X_train, y_train, _, _, X_test, y_test, _ = _load_arrays(station_id)
+    X_train, y_train, _, _, X_test, y_test, meta = _load_arrays(station_id)
 
     n_jobs = int(os.environ.get("GRID_N_JOBS", "-1"))
     grid   = GridSearchCV(Ridge(), {"alpha": [0.1, 1.0, 10.0, 100.0]},
@@ -299,7 +300,8 @@ def _train_ridge(**context):
 
     export_sklearn(model, "ridge_regression",
                    _models_dir(station_id),
-                   output_path=_tmp_onnx(station_id, "ridge_regression"))
+                   output_path=_tmp_onnx(station_id, "ridge_regression"),
+                   n_features=meta["n_features"])
     print(f"  Ridge  MAE={metrics['MAE']:.4f}  alpha={grid.best_params_['alpha']}")
 
 
@@ -314,7 +316,7 @@ def _train_random_forest(**context):
 
     station_id = _station_id(context)
     _setup_mlflow(station_id)
-    X_train, y_train, _, _, X_test, y_test, _ = _load_arrays(station_id)
+    X_train, y_train, _, _, X_test, y_test, meta = _load_arrays(station_id)
 
     n_jobs = int(os.environ.get("GRID_N_JOBS", "-1"))
     grid   = GridSearchCV(
@@ -333,7 +335,8 @@ def _train_random_forest(**context):
 
     export_sklearn(model, "random_forest",
                    _models_dir(station_id),
-                   output_path=_tmp_onnx(station_id, "random_forest"))
+                   output_path=_tmp_onnx(station_id, "random_forest"),
+                   n_features=meta["n_features"])
     print(f"  RandomForest  MAE={metrics['MAE']:.4f}  params={grid.best_params_}")
 
 
