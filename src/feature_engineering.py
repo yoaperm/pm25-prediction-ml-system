@@ -5,7 +5,6 @@ Creates time-series features for PM2.5 prediction.
 """
 
 import pandas as pd
-import numpy as np
 
 
 def create_lag_features(df: pd.DataFrame, lag_days: list[int]) -> pd.DataFrame:

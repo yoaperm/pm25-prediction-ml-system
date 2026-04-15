@@ -159,8 +159,8 @@ def main(mode: str, days: int):
           f"min={df['pm25'].min():.1f}  max={df['pm25'].max():.1f}")
 
     if total_pairs < 7:
-        print(f"\n  ERROR: need ≥ 22 days to get 7 pairs (15 history + 7). "
-              f"Use --days 25 or more.")
+        print("\n  ERROR: need ≥ 22 days to get 7 pairs (15 history + 7). "
+              "Use --days 25 or more.")
         sys.exit(1)
 
     # Step 1+2: send to API
@@ -175,7 +175,7 @@ def main(mode: str, days: int):
     print("\n" + "=" * 55)
     if state == "success":
         print("  Pipeline complete.")
-        print(f"  MLflow: http://localhost:5001")
+        print("  MLflow: http://localhost:5001")
         print(f"  Airflow: {AIRFLOW_URL}/dags/pm25_pipeline/grid")
     else:
         print("  DAG failed — check Airflow UI for details.")

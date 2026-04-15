@@ -25,7 +25,7 @@ def check_services():
         assert requests.get(f"{API_URL}/health", timeout=5).json()["status"] == "ok"
         print(f"  API     : OK ({API_URL})")
     except Exception:
-        print(f"  API     : NOT REACHABLE — run `docker compose up -d`")
+        print("  API     : NOT REACHABLE — run `docker compose up -d`")
         sys.exit(1)
 
 
@@ -119,7 +119,7 @@ def main(csv_file: str, threshold: float):
         if state == "success":
             print("\n" + "=" * 55)
             print("  Pipeline complete — model retrained")
-            print(f"  MLflow : http://localhost:5001")
+            print("  MLflow : http://localhost:5001")
             print("=" * 55)
     else:
         print("\n" + "=" * 55)

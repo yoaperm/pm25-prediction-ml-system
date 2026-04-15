@@ -4,7 +4,10 @@ version: "3.8"
 # Shared Airflow configuration (YAML anchor)
 # -----------------------------------------------------------------------
 x-airflow-common: &airflow-common
-  build: .
+  build:
+    context: .
+    args:
+      INSTALL_ML_DEPS: ${INSTALL_ML_DEPS:-true}
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -35,6 +38,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
       - postgres_data:/var/lib/postgresql/data

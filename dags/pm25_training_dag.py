@@ -38,7 +38,9 @@ FEAT_COLS    = f"{MODELS_DIR}/feature_columns.json"
 
 # ── Task 1: Load & preprocess → feature engineering ─────────────────────────
 def _feature_engineering(**context):
-    import sys, os, json
+    import sys
+    import os
+    import json
     sys.path.insert(0, SRC)
     from data_loader import load_config, load_train_test_data
     from preprocessing import preprocess_pipeline
@@ -86,7 +88,8 @@ def _load_arrays():
 
 # ── Helper: MLflow setup ─────────────────────────────────────────────────────
 def _setup_mlflow(config):
-    import os, mlflow
+    import os
+    import mlflow
     uri = os.environ.get(
         "MLFLOW_TRACKING_URI",
         config.get("mlflow", {}).get("tracking_uri", "http://mlflow:5000"),
@@ -97,7 +100,10 @@ def _setup_mlflow(config):
 
 # ── Task 2a: Baseline Linear Regression ─────────────────────────────────────
 def _train_baseline(**context):
-    import sys, os, joblib, mlflow
+    import sys
+    import os
+    import joblib
+    import mlflow
     sys.path.insert(0, SRC)
     from data_loader import load_config
     from sklearn.linear_model import LinearRegression
@@ -120,7 +126,10 @@ def _train_baseline(**context):
 
 # ── Task 2b: Ridge Regression ────────────────────────────────────────────────
 def _train_ridge(**context):
-    import sys, os, joblib, mlflow
+    import sys
+    import os
+    import joblib
+    import mlflow
     sys.path.insert(0, SRC)
     from data_loader import load_config
     from train import train_with_tuning
@@ -144,7 +153,10 @@ def _train_ridge(**context):
 
 # ── Task 2c: Random Forest ───────────────────────────────────────────────────
 def _train_random_forest(**context):
-    import sys, os, joblib, mlflow
+    import sys
+    import os
+    import joblib
+    import mlflow
     sys.path.insert(0, SRC)
     from data_loader import load_config
     from train import train_with_tuning
@@ -171,7 +183,10 @@ def _train_random_forest(**context):
 
 # ── Task 2d: XGBoost ─────────────────────────────────────────────────────────
 def _train_xgboost(**context):
-    import sys, os, joblib, mlflow
+    import sys
+    import os
+    import joblib
+    import mlflow
     sys.path.insert(0, SRC)
     from data_loader import load_config
     from train import train_with_tuning
@@ -198,7 +213,10 @@ def _train_xgboost(**context):
 
 # ── Task 2e: LSTM ────────────────────────────────────────────────────────────
 def _train_lstm(**context):
-    import sys, os, joblib, mlflow
+    import sys
+    import os
+    import joblib
+    import mlflow
     import torch
     sys.path.insert(0, SRC)
     from data_loader import load_config
@@ -228,7 +246,9 @@ def _train_lstm(**context):
 
 # ── Task 3: Evaluate all models ──────────────────────────────────────────────
 def _evaluate(**context):
-    import sys, os, joblib
+    import sys
+    import os
+    import joblib
     import numpy as np
     import pandas as pd
     sys.path.insert(0, SRC)

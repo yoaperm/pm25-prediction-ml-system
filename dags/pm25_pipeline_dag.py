@@ -33,7 +33,9 @@ RESULTS_DIR = "/app/results"
 
 # ── Task 1: Export — load & join prediction+actual logs ───────────────────────
 def _export_data(**context):
-    import sys, os, pandas as pd
+    import sys
+    import os
+    import pandas as pd
     sys.path.insert(0, SRC)
 
     predictions_log = f"{RESULTS_DIR}/predictions_log.csv"

@@ -6,7 +6,6 @@ Loads PM2.5 data from Excel files and station metadata.
 
 import pandas as pd
 import yaml
-import os
 
 
 def load_config(config_path: str = "configs/config.yaml") -> dict:

@@ -5,7 +5,6 @@ Handles missing values, outliers, and data cleaning for PM2.5 time series.
 """
 
 import pandas as pd
-import numpy as np
 
 
 def handle_missing_values(df: pd.DataFrame, method: str = "ffill") -> pd.DataFrame:
