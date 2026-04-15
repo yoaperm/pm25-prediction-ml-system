@@ -20,7 +20,8 @@ import httpx
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -38,6 +39,16 @@ AIRFLOW_URL       = os.environ.get("AIRFLOW_URL", "http://airflow-webserver:8080
 AIRFLOW_USER      = os.environ.get("AIRFLOW_USER", "admin")
 AIRFLOW_PASSWORD  = os.environ.get("AIRFLOW_PASSWORD", "admin")
 MAE_THRESHOLD     = float(os.environ.get("MAE_THRESHOLD", "6.0"))
+API_KEY           = os.environ.get("API_KEY", "foonalert-secret-key")
+
+# ── Auth ───────────────────────────────────────────────────────────────────────
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(api_key: str = Security(_api_key_header)):
+    if api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return api_key
 
 # ── Load model at startup ──────────────────────────────────────────────────────
 model = joblib.load(MODEL_PATH)
@@ -147,7 +158,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/model/info")
+@app.get("/model/info", dependencies=[Depends(verify_api_key)])
 def model_info():
     return {
         "model_name": MODEL_NAME,
@@ -156,7 +167,7 @@ def model_info():
     }
 
 
-@app.post("/predict", response_model=PredictResponse)
+@app.post("/predict", response_model=PredictResponse, dependencies=[Depends(verify_api_key)])
 def predict(req: PredictRequest):
     feat_df = _build_features(req.history)
 
@@ -184,7 +195,7 @@ def predict(req: PredictRequest):
     )
 
 
-@app.post("/actual", response_model=ActualResponse)
+@app.post("/actual", response_model=ActualResponse, dependencies=[Depends(verify_api_key)])
 def record_actual(req: ActualRequest):
     """
     Call this endpoint the day AFTER a prediction was made, once the real
@@ -214,7 +225,7 @@ def record_actual(req: ActualRequest):
     )
 
 
-@app.post("/retrain", response_model=RetrainResponse)
+@app.post("/retrain", response_model=RetrainResponse, dependencies=[Depends(verify_api_key)])
 def retrain(req: RetrainRequest = RetrainRequest()):
     """
     Joins predictions_log with actuals_log on date.
