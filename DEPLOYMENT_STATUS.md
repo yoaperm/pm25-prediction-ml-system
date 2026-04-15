@@ -25,8 +25,9 @@ All 5 station models have been successfully trained:
 **Reason**: The `pm25_24h_training_dag.py` saves models but doesn't publish to Triton repository.
 
 **Fix Applied**: 
-1. Manually copied ONNX files to `triton_model_repo/pm25_{id}/1/model.onnx`
-2. Created `config.pbtxt` files for each station model
+1. ✅ Added `_publish_to_triton()` function to training DAG
+2. ✅ Auto-publishes to Triton when new model is better than production
+3. ✅ Creates `config.pbtxt` and copies ONNX automatically
 
 ## 🔄 **Current Status: ✅ ALL DEPLOYED**
 
@@ -79,22 +80,18 @@ for station_id in [56, 57, 58, 59, 61]:
     print(f"Station {station_id}: {pred:.2f} µg/m³")
 ```
 
-## 📝 **TODO: Fix Training DAG**
+## ✅ **Training DAG Now Auto-Publishes**
 
-Update `dags/pm25_24h_training_dag.py` to automatically publish to Triton after deployment.
+The `dags/pm25_24h_training_dag.py` now automatically publishes to Triton when a better model is deployed.
 
-Add this to the `_compare_and_deploy` function:
-
-```python
-if status == "DEPLOYED":
-    # Publish to Triton
-    from triton_utils import publish_to_triton
-    publish_to_triton(
-        onnx_path=onnx_dest,
-        triton_repo="/app/triton_model_repo",
-        is_lstm=best_is_lstm
-    )
-```
+**What happens on training**:
+1. Trains 5 models (Linear, Ridge, RF, XGBoost, LSTM)
+2. Compares best model with current production
+3. If better (lower MAE):
+   - ✅ Saves to `models/station_{id}_24h/onnx/`
+   - ✅ Updates `active_model.json`
+   - ✅ **Publishes to Triton** (copies ONNX + creates config.pbtxt)
+   - ✅ Triton auto-loads in ~30 seconds
 
 ## 🔍 **Verify Deployment**
 
@@ -125,8 +122,8 @@ Station 61: 30.78 µg/m³ (Linear Regression)
 ```
 
 **Next Steps (Optional)**:
-1. ✅ Enable auto-monitoring: `airflow dags unpause pm25_24h_pipeline`
-2. ✅ Update training DAG to auto-publish to Triton (see TODO below)
+1. Enable auto-monitoring: `airflow dags unpause pm25_24h_pipeline`
+2. Test retraining a station to verify Triton auto-publish works
 
 ---
 
