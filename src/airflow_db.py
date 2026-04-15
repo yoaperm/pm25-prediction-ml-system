@@ -6,8 +6,8 @@ Handles PostgreSQL connections, table management, and data operations.
 import psycopg2
 from psycopg2.extras import execute_values
 import logging
-from typing import List, Dict, Tuple, Optional
-from datetime import datetime
+import os
+from typing import List, Dict, Tuple, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,8 @@ class PM25Database:
                 port=self.port,
                 database=self.database,
                 user=self.user,
-                password=self.password
+                password=self.password,
+                options="-c timezone=Asia/Bangkok",
             )
             self.conn.autocommit = False  # Use transactions
             logger.info(f"Connected to {self.database}@{self.host}")
@@ -58,6 +59,8 @@ class PM25Database:
         CREATE TABLE IF NOT EXISTS pm25_raw_hourly (
             id SERIAL PRIMARY KEY,
             station_id INT NOT NULL,
+            station_name TEXT,
+            station_name_en TEXT,
             timestamp TIMESTAMPTZ NOT NULL,
             pm25 FLOAT,
             pm10 FLOAT,
@@ -65,7 +68,7 @@ class PM25Database:
             rh FLOAT,
             ws FLOAT,
             wd FLOAT,
-            ingestion_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+            ingestion_time TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(station_id, timestamp),
             CHECK (pm25 >= 0 AND pm25 <= 500),
             CHECK (pm10 >= 0),
@@ -83,8 +86,14 @@ class PM25Database:
 
         alter_sql = """
         ALTER TABLE pm25_raw_hourly
+        ADD COLUMN IF NOT EXISTS station_name TEXT;
+
+        ALTER TABLE pm25_raw_hourly
+        ADD COLUMN IF NOT EXISTS station_name_en TEXT;
+
+        ALTER TABLE pm25_raw_hourly
         ALTER COLUMN ingestion_time
-        SET DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 hours');
+        SET DEFAULT CURRENT_TIMESTAMP;
         """
         
         try:
@@ -101,7 +110,24 @@ class PM25Database:
             logger.error(f"Failed to create table: {e}")
             raise
     
-    def insert_records(self, records: List[Dict]) -> Tuple[int, int]:
+    def _prepare_record_values(self, records: List[Dict]) -> List[Tuple]:
+        return [
+            (
+                record.get("station_id"),
+                record.get("station_name"),
+                record.get("station_name_en"),
+                record.get("timestamp"),
+                record.get("pm25"),
+                record.get("pm10"),
+                record.get("temp"),
+                record.get("rh"),
+                record.get("ws"),
+                record.get("wd"),
+            )
+            for record in records
+        ]
+
+    def insert_records(self, records: List[Dict], commit: bool = True) -> Tuple[int, int]:
         """
         Insert records idempotently (duplicates ignored).
         
@@ -118,24 +144,11 @@ class PM25Database:
             logger.warning("No records to insert")
             return 0, 0
         
-        # Prepare values
-        values = [
-            (
-                record.get("station_id"),
-                record.get("timestamp"),
-                record.get("pm25"),
-                record.get("pm10"),
-                record.get("temp"),
-                record.get("rh"),
-                record.get("ws"),
-                record.get("wd"),
-            )
-            for record in records
-        ]
+        values = self._prepare_record_values(records)
         
         insert_sql = """
         INSERT INTO pm25_raw_hourly
-        (station_id, timestamp, pm25, pm10, temp, rh, ws, wd)
+        (station_id, station_name, station_name_en, timestamp, pm25, pm10, temp, rh, ws, wd)
         VALUES %s
         ON CONFLICT (station_id, timestamp) DO NOTHING
         RETURNING 1;
@@ -144,7 +157,8 @@ class PM25Database:
         try:
             cur = self.conn.cursor()
             inserted_rows = execute_values(cur, insert_sql, values, fetch=True)
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
 
             inserted = len(inserted_rows)
             duplicates = len(records) - inserted
@@ -154,8 +168,81 @@ class PM25Database:
             
             return inserted, duplicates
         except psycopg2.Error as e:
-            self.conn.rollback()
+            if commit:
+                self.conn.rollback()
             logger.error(f"Insert failed: {e}")
+            raise
+
+    def delete_records_in_range(
+        self,
+        start_timestamp,
+        end_timestamp,
+        station_ids: Optional[Sequence[int]] = None,
+        commit: bool = True,
+    ) -> int:
+        """Delete records in a half-open timestamp range [start, end)."""
+        if not self.conn:
+            self.connect()
+
+        delete_sql = """
+        DELETE FROM pm25_raw_hourly
+        WHERE timestamp >= %s
+          AND timestamp < %s
+        """
+        params: List[object] = [start_timestamp, end_timestamp]
+
+        if station_ids:
+            delete_sql += " AND station_id = ANY(%s)"
+            params.append(list(station_ids))
+
+        try:
+            cur = self.conn.cursor()
+            cur.execute(delete_sql, tuple(params))
+            deleted_count = cur.rowcount
+            if commit:
+                self.conn.commit()
+            cur.close()
+            logger.info(
+                "Deleted %s rows from pm25_raw_hourly for range [%s, %s)",
+                deleted_count,
+                start_timestamp,
+                end_timestamp,
+            )
+            return deleted_count
+        except psycopg2.Error as e:
+            if commit:
+                self.conn.rollback()
+            logger.error(f"Delete failed: {e}")
+            raise
+
+    def replace_records_for_range(
+        self,
+        records: List[Dict],
+        start_timestamp,
+        end_timestamp,
+        station_ids: Optional[Sequence[int]] = None,
+    ) -> Tuple[int, int, int]:
+        """
+        Atomically replace a station/date range in pm25_raw_hourly.
+
+        Returns:
+            (deleted_count, inserted_count, duplicate_count)
+        """
+        if not self.conn:
+            self.connect()
+
+        try:
+            deleted_count = self.delete_records_in_range(
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                station_ids=station_ids,
+                commit=False,
+            )
+            inserted_count, duplicate_count = self.insert_records(records, commit=False)
+            self.conn.commit()
+            return deleted_count, inserted_count, duplicate_count
+        except psycopg2.Error:
+            self.conn.rollback()
             raise
     
     def _is_duplicate(self, record: Dict) -> bool:
@@ -234,11 +321,11 @@ def get_db_connection(config_path: str = None) -> PM25Database:
     """Factory function to get a database connection."""
     # In production, would load credentials from config_path
     db = PM25Database(
-        host="postgres",
-        port=5432,
-        database="pm25",
-        user="postgres",
-        password="postgres"
+        host=os.getenv("PM25_DB_HOST", "postgres"),
+        port=int(os.getenv("PM25_DB_PORT", "5432")),
+        database=os.getenv("PM25_DB_NAME", "pm25"),
+        user=os.getenv("PM25_DB_USER", "postgres"),
+        password=os.getenv("PM25_DB_PASSWORD", "postgres"),
     )
     db.connect()
     return db

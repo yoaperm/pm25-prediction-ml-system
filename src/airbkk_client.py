@@ -2,22 +2,28 @@
 AirBKK hourly data client.
 
 This module wraps the AirBKK report endpoints used in the Colab notebook and
-normalizes one hourly snapshot into the schema expected by the ingestion DAG.
+normalizes hourly snapshots into the schema expected by the ingestion DAGs.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 import logging
 import time
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
 from urllib import error, parse, request
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
+BANGKOK_TIMEZONE_NAME = "Asia/Bangkok"
+
+REQUIRED_STATION_IDS = (56, 57, 58, 59, 61)
+STATION_NAME_EN_OVERRIDES = {
+    58: "Rat Burana District",
+}
 
 BASE_URL = "https://official.airbkk.com"
 REPORT_BASE_URL = f"{BASE_URL}/airbkk/Report"
@@ -34,9 +40,11 @@ PARAMETER_FIELD_MAP = {
 
 
 def parse_thai_buddhist_datetime(value: str) -> datetime:
-    """Convert AirBKK timestamps like 14/04/2569 02:00 to naive UTC+7 time."""
-    dt = datetime.strptime(value.strip(), "%d/%m/%Y %H:%M")
-    return dt.replace(year=dt.year - 543)
+    """Convert AirBKK timestamps like 14/04/2569 02:00 to Bangkok-aware time."""
+    date_part, time_part = value.strip().split(" ")
+    day, month, buddhist_year = (int(part) for part in date_part.split("/"))
+    hour, minute = (int(part) for part in time_part.split(":"))
+    return datetime(buddhist_year - 543, month, day, hour, minute, tzinfo=BANGKOK_TZ)
 
 
 def format_airbkk_datetime(target_dt: datetime) -> str:
@@ -120,17 +128,60 @@ class AirBKKClient:
             raise RuntimeError("Unexpected getMeasurements payload")
         return payload
 
-    def get_hourly_records(self, target_dt: datetime) -> List[Dict[str, object]]:
-        """Fetch one hourly snapshot for all stations and normalize it for the DAG."""
-        stations = self.get_measurements()
-        station_ids = [str(station["MeasIndex"]) for station in stations if station.get("MeasIndex") is not None]
+    def _build_station_lookup(
+        self,
+        stations: Sequence[Dict[str, object]],
+    ) -> Dict[int, Dict[str, Optional[str]]]:
+        station_lookup: Dict[int, Dict[str, Optional[str]]] = {}
+        for station in stations:
+            raw_station_id = station.get("MeasIndex")
+            if raw_station_id is None:
+                continue
 
-        if not station_ids:
+            station_id = int(raw_station_id)
+            station_lookup[station_id] = {
+                "station_name": station.get("District"),
+                "station_name_en": STATION_NAME_EN_OVERRIDES.get(
+                    station_id,
+                    station.get("District_en"),
+                ),
+            }
+
+        return station_lookup
+
+    def _resolve_station_ids(
+        self,
+        stations: Sequence[Dict[str, object]],
+        station_ids: Optional[Sequence[int]] = None,
+    ) -> List[int]:
+        available_station_ids = {
+            int(station["MeasIndex"])
+            for station in stations
+            if station.get("MeasIndex") is not None
+        }
+        requested_station_ids = station_ids or REQUIRED_STATION_IDS
+        return [
+            station_id
+            for station_id in requested_station_ids
+            if station_id in available_station_ids
+        ]
+
+    def get_hourly_records(
+        self,
+        target_dt: datetime,
+        station_ids: Optional[Sequence[int]] = None,
+    ) -> List[Dict[str, object]]:
+        """Fetch one hourly snapshot for the required stations."""
+        stations = self.get_measurements()
+        station_lookup = self._build_station_lookup(stations)
+        resolved_station_ids = self._resolve_station_ids(stations, station_ids)
+
+        if not resolved_station_ids:
             return []
 
         target_text = format_airbkk_datetime(target_dt)
         payload: List[tuple[str, str]] = [("groupid", "all")]
-        payload.extend(("MeasIndex[]", station_id) for station_id in station_ids)
+        payload.extend(("MeasIndex[]", str(station_id)) for station_id in resolved_station_ids)
         payload.extend(("parameterTags[]", tag) for tag in TARGET_PARAMETER_TAGS)
         payload.extend(
             [
@@ -145,11 +196,57 @@ class AirBKKClient:
         if not isinstance(response, dict):
             raise RuntimeError("Unexpected getData payload")
 
-        return self._normalize_snapshot(response)
+        return self._normalize_snapshot(
+            response=response,
+            station_lookup=station_lookup,
+            station_ids=resolved_station_ids,
+        )
 
-    def _normalize_snapshot(self, response: Dict[str, object]) -> List[Dict[str, object]]:
+    def get_records_for_range(
+        self,
+        start_dt: datetime,
+        end_dt: datetime,
+        station_ids: Optional[Sequence[int]] = None,
+    ) -> List[Dict[str, object]]:
+        """Fetch a Bangkok-local hourly range for the required stations."""
+        stations = self.get_measurements()
+        station_lookup = self._build_station_lookup(stations)
+        resolved_station_ids = self._resolve_station_ids(stations, station_ids)
+
+        if not resolved_station_ids:
+            return []
+
+        payload: List[tuple[str, str]] = [("groupid", "all")]
+        payload.extend(("MeasIndex[]", str(station_id)) for station_id in resolved_station_ids)
+        payload.extend(("parameterTags[]", tag) for tag in TARGET_PARAMETER_TAGS)
+        payload.extend(
+            [
+                ("data_type", "hourly"),
+                ("date_s", format_airbkk_datetime(start_dt)),
+                ("date_e", format_airbkk_datetime(end_dt)),
+                ("display_type", "table"),
+            ]
+        )
+
+        response = self._post_json("getData", payload)
+        if not isinstance(response, dict):
+            raise RuntimeError("Unexpected getData payload")
+
+        return self._normalize_snapshot(
+            response=response,
+            station_lookup=station_lookup,
+            station_ids=resolved_station_ids,
+        )
+
+    def _normalize_snapshot(
+        self,
+        response: Dict[str, object],
+        station_lookup: Dict[int, Dict[str, Optional[str]]],
+        station_ids: Sequence[int],
+    ) -> List[Dict[str, object]]:
         arr_parameter = response.get("arrParameter") or []
         arr_data = response.get("arrData") or []
+        allowed_station_ids = set(station_ids)
 
         alias_map: Dict[str, Dict[str, str]] = {}
         for item in arr_parameter:
@@ -161,7 +258,7 @@ class AirBKKClient:
             parameter = item.get("ShortName")
             field_name = PARAMETER_FIELD_MAP.get(str(parameter))
 
-            if alias and station_id is not None and field_name:
+            if alias and station_id is not None and field_name and int(station_id) in allowed_station_ids:
                 alias_map[str(alias)] = {
                     "station_id": str(station_id),
                     "field_name": field_name,
@@ -178,7 +275,7 @@ class AirBKKClient:
                 continue
 
             timestamp = parse_thai_buddhist_datetime(str(date_text))
-            timestamp_text = timestamp.replace(tzinfo=timezone.utc).isoformat()
+            timestamp_text = timestamp.isoformat()
 
             for alias, raw_value in row.items():
                 if alias == "Date_Time":
@@ -189,11 +286,14 @@ class AirBKKClient:
                     continue
 
                 station_id = int(meta["station_id"])
+                station_meta = station_lookup.get(station_id, {})
                 record_key = (station_id, timestamp_text)
                 record = records_by_key.setdefault(
                     record_key,
                     {
                         "station_id": station_id,
+                        "station_name": station_meta.get("station_name"),
+                        "station_name_en": station_meta.get("station_name_en"),
                         "timestamp": timestamp_text,
                         "pm25": None,
                         "pm10": None,

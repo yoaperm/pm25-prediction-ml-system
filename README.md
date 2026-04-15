@@ -121,7 +121,7 @@ pm25-prediction-ml-system/
 │   ├── raw/                          # PM2.5(2024).xlsx, PM2.5(2025).xlsx
 │   └── processed/                    # Parquet files shared between Airflow tasks
 ├── docker/
-│   └── init-db.sql                   # Postgres DB init (airflow + mlflow schemas)
+│   └── init-db.sql                   # Postgres DB init, including pm25 timezone = Asia/Bangkok
 ├── models/                           # Saved .joblib models, lstm.pt, feature_columns.json
 │   └── onnx/                         # ONNX-exported models
 ├── results/

@@ -22,13 +22,13 @@ Features:
   - SLA monitoring: must complete within 10 min of hour boundary
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.empty import EmptyOperator
-from airflow.utils.task_group import TaskGroup
 import os
 import logging
+import pendulum
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +36,15 @@ logger = logging.getLogger(__name__)
 SRC         = "/app/src"
 CONFIG_PATH = "/app/configs/config.yaml"
 RESULTS_DIR = "/app/results"
+BANGKOK_TIMEZONE_NAME = "Asia/Bangkok"
+BANGKOK_TZ = pendulum.timezone(BANGKOK_TIMEZONE_NAME)
 
 # DAG definition
 dag = DAG(
     dag_id="pm25_hourly_ingest",
     description="Hourly PM2.5 data ingestion from AirBKK API with validation",
     schedule_interval="0 * * * *",  # Every hour at minute 0
-    start_date=datetime(2026, 4, 9),
+    start_date=pendulum.datetime(2026, 4, 9, tz=BANGKOK_TIMEZONE_NAME),
     catchup=False,
     tags=["pm25", "data-ingestion"],
     default_args={
@@ -64,19 +66,15 @@ def _fetch_data(**context):
     import sys
     sys.path.insert(0, SRC)
     
-    from airbkk_client import AirBKKClient, BANGKOK_TZ
+    from airbkk_client import AirBKKClient, REQUIRED_STATION_IDS
     
     execution_date = context.get("data_interval_start") or context["execution_date"]
     ti = context["ti"]
-
-    if execution_date.tzinfo is None:
-        execution_date = execution_date.replace(tzinfo=timezone.utc)
 
     target_hour = execution_date.astimezone(BANGKOK_TZ).replace(
         minute=0,
         second=0,
         microsecond=0,
-        tzinfo=None,
     )
     
     logger.info(
@@ -87,7 +85,7 @@ def _fetch_data(**context):
 
     try:
         client = AirBKKClient(timeout=90)
-        records = client.get_hourly_records(target_hour)
+        records = client.get_hourly_records(target_hour, station_ids=REQUIRED_STATION_IDS)
 
         logger.info("[fetch] Fetched %s records from AirBKK", len(records))
         if not records:
@@ -114,9 +112,6 @@ def _validate_data(**context):
     - Null/missing value handling
     - Duplicate detection
     """
-    import pandas as pd
-    from datetime import datetime
-    
     ti = context["ti"]
     
     # Pull records from fetch task
@@ -128,9 +123,6 @@ def _validate_data(**context):
         ti.xcom_push(key="validated_records", value=[])
         ti.xcom_push(key="validation_failures", value=0)
         return {"validated": 0, "failed": 0}
-    
-    # Convert to DataFrame for easier validation
-    df = pd.DataFrame(records)
     
     # Define validation rules
     validation_rules = {
@@ -247,9 +239,10 @@ def _log_metrics(**context):
     
     from airflow_db import get_db_connection
     from airflow_monitor import DataQualityMonitor
+    from airbkk_client import REQUIRED_STATION_IDS
     
     ti = context["ti"]
-    execution_date = context["execution_date"]
+    execution_date = context["execution_date"].astimezone(BANGKOK_TZ)
     
     # Pull metrics from previous tasks
     fetch_count = ti.xcom_pull(task_ids="fetch_data", key="fetch_count") or 0
@@ -265,7 +258,7 @@ def _log_metrics(**context):
         "stored_records": stored_count,
         "duplicates_skipped": duplicate_count,
         "validation_pass_rate": (fetch_count - validation_failures) / fetch_count if fetch_count > 0 else 0,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": pendulum.now(BANGKOK_TIMEZONE_NAME).isoformat(),
     }
     
     logger.info(f"[metrics] Ingestion metrics: {metrics}")
@@ -275,8 +268,8 @@ def _log_metrics(**context):
         db = get_db_connection(CONFIG_PATH)
         monitor = DataQualityMonitor(db)
         
-        # Check quality for main stations
-        for station_id in [145, 10]:
+        # Check quality for the required stations in this pipeline.
+        for station_id in REQUIRED_STATION_IDS:
             quality = monitor.check_recent_data(station_id, hours=24)
             drift = monitor.detect_sensor_drift(station_id)
             
