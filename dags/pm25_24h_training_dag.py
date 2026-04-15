@@ -104,8 +104,8 @@ def _load_hourly_from_pg(station_id, db_url, data_start):
         ORDER  BY timestamp
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn,
-                         params={"station_id": station_id, "data_start": data_start})
+        result = conn.execute(query, {"station_id": station_id, "data_start": data_start})
+        df = pd.DataFrame(result.fetchall(), columns=result.keys())
     engine.dispose()
 
     if df.empty:
