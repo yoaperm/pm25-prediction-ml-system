@@ -1,6 +1,0 @@
-model,MAE,RMSE,R2
-Linear Regression (Baseline),5.1348,6.7493,0.7726
-Ridge Regression,4.8286,6.5294,0.7871
-Random Forest,4.5494,6.5148,0.7881
-XGBoost,4.6853,6.7955,0.7695
-LSTM,6.275,8.0277,0.6783

@@ -17,9 +17,9 @@ import datetime
 from typing import List, Optional
 
 import httpx
-import joblib
 import numpy as np
 import pandas as pd
+import onnxruntime as rt
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -27,19 +27,23 @@ from pydantic import BaseModel, Field
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR          = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS_DIR        = os.path.join(BASE_DIR, "models")
+ONNX_DIR          = os.path.join(MODELS_DIR, "onnx")
 RESULTS_DIR       = os.path.join(BASE_DIR, "results")
 PREDICTIONS_LOG   = os.path.join(RESULTS_DIR, "predictions_log.csv")
 ACTUALS_LOG       = os.path.join(RESULTS_DIR, "actuals_log.csv")
 
 MODEL_NAME        = os.environ.get("MODEL_NAME", "random_forest")
-MODEL_PATH        = os.path.join(MODELS_DIR, f"{MODEL_NAME}.joblib")
 FEATURE_COLS_PATH = os.path.join(MODELS_DIR, "feature_columns.json")
+ACTIVE_MODEL_JSON = os.path.join(MODELS_DIR, "active_model.json")
 
-AIRFLOW_URL       = os.environ.get("AIRFLOW_URL", "http://airflow-webserver:8080")
-AIRFLOW_USER      = os.environ.get("AIRFLOW_USER", "admin")
-AIRFLOW_PASSWORD  = os.environ.get("AIRFLOW_PASSWORD", "admin")
-MAE_THRESHOLD     = float(os.environ.get("MAE_THRESHOLD", "6.0"))
-API_KEY           = os.environ.get("API_KEY", "foonalert-secret-key")
+AIRFLOW_URL        = os.environ.get("AIRFLOW_URL", "http://airflow-webserver:8080")
+AIRFLOW_USER       = os.environ.get("AIRFLOW_USER", "admin")
+AIRFLOW_PASSWORD   = os.environ.get("AIRFLOW_PASSWORD", "admin")
+MAE_THRESHOLD      = float(os.environ.get("MAE_THRESHOLD", "6.0"))
+API_KEY            = os.environ.get("API_KEY", "foonalert-secret-key")
+INFERENCE_BACKEND  = os.environ.get("INFERENCE_BACKEND", "triton")  # "triton" | "onnxruntime"
+TRITON_URL         = os.environ.get("TRITON_URL", "triton:8000")
+TRITON_MODEL_NAME  = os.environ.get("TRITON_MODEL_NAME", "pm25")
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -50,8 +54,39 @@ async def verify_api_key(api_key: str = Security(_api_key_header)):
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return api_key
 
-# ── Load model at startup ──────────────────────────────────────────────────────
-model = joblib.load(MODEL_PATH)
+# ── Load active model metadata ────────────────────────────────────────────────
+_active_info: dict = {}
+if os.path.exists(ACTIVE_MODEL_JSON):
+    with open(ACTIVE_MODEL_JSON) as f:
+        _active_info = json.load(f)
+
+IS_LSTM = _active_info.get("is_lstm", False)
+
+# ── Inference backend setup ───────────────────────────────────────────────────
+if INFERENCE_BACKEND == "triton":
+    import tritonclient.http as _triton_http
+    _triton_client  = _triton_http.InferenceServerClient(url=TRITON_URL)
+    _input_name     = _active_info.get("input_name", "float_input")
+    _output_name    = _active_info.get("output_name", "variable")
+    session         = None
+    print(f"Inference backend: Triton  url={TRITON_URL}  model={TRITON_MODEL_NAME}")
+else:
+    # Local ONNX Runtime (default)
+    def _load_onnx_session():
+        if _active_info.get("onnx_file"):
+            path = os.path.join(ONNX_DIR, _active_info["onnx_file"])
+            if os.path.exists(path):
+                return rt.InferenceSession(path, providers=["CPUExecutionProvider"])
+        return rt.InferenceSession(
+            os.path.join(ONNX_DIR, f"{MODEL_NAME}.onnx"),
+            providers=["CPUExecutionProvider"],
+        )
+    session      = _load_onnx_session()
+    _input_name  = session.get_inputs()[0].name
+    _output_name = session.get_outputs()[0].name
+    _triton_client = None
+    print(f"Inference backend: onnxruntime  model={_active_info.get('onnx_file', MODEL_NAME)}")
+
 with open(FEATURE_COLS_PATH) as f:
     FEATURE_COLS: List[str] = json.load(f)
 
@@ -161,9 +196,15 @@ def health():
 @app.get("/model/info", dependencies=[Depends(verify_api_key)])
 def model_info():
     return {
-        "model_name": MODEL_NAME,
-        "feature_columns": FEATURE_COLS,
-        "min_history_days": MIN_HISTORY_DAYS,
+        "model_key":          _active_info.get("model_key", MODEL_NAME),
+        "onnx_file":          _active_info.get("onnx_file"),
+        "train_start":        _active_info.get("train_start"),
+        "train_end":          _active_info.get("train_end"),
+        "is_lstm":            IS_LSTM,
+        "inference_backend":  INFERENCE_BACKEND,
+        "triton_url":         TRITON_URL if INFERENCE_BACKEND == "triton" else None,
+        "feature_columns":    FEATURE_COLS,
+        "min_history_days":   MIN_HISTORY_DAYS,
     }
 
 
@@ -174,9 +215,19 @@ def predict(req: PredictRequest):
     if feat_df.empty:
         raise HTTPException(status_code=422, detail="Not enough valid rows after feature engineering.")
 
-    last_row     = feat_df.iloc[[-1]]
-    X            = last_row[FEATURE_COLS].values
-    prediction   = float(np.round(model.predict(X)[0], 2))
+    last_row = feat_df.iloc[[-1]]
+    X        = last_row[FEATURE_COLS].values.astype(np.float32)
+    X_in     = X.reshape(X.shape[0], 1, X.shape[1]) if IS_LSTM else X
+
+    if INFERENCE_BACKEND == "triton":
+        import tritonclient.http as _th
+        inp = _th.InferInput(_input_name, X_in.shape, "FP32")
+        inp.set_data_from_numpy(X_in)
+        out = _th.InferRequestedOutput(_output_name)
+        result = _triton_client.infer(model_name=TRITON_MODEL_NAME, inputs=[inp], outputs=[out])
+        prediction = float(np.round(result.as_numpy(_output_name).flatten()[0], 2))
+    else:
+        prediction = float(np.round(session.run([_output_name], {_input_name: X_in})[0].flatten()[0], 2))
     last_date    = last_row["date"].iloc[0].date()
     next_date    = last_date + datetime.timedelta(days=1)
 

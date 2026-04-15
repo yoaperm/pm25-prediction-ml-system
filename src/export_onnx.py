@@ -24,28 +24,28 @@ SKLEARN_MODELS = {
     "random_forest":              "random_forest.joblib",
 }
 
-def export_sklearn(model, name, onnx_dir):
+def export_sklearn(model, name, onnx_dir, output_path=None):
     initial_type = [("float_input", FloatTensorType([None, N_FEATURES]))]
     onnx_model = convert_sklearn(model, initial_types=initial_type, target_opset=17)
-    path = os.path.join(onnx_dir, f"{name}.onnx")
+    path = output_path or os.path.join(onnx_dir, f"{name}.onnx")
     with open(path, "wb") as f:
         f.write(onnx_model.SerializeToString())
     print(f"  Saved: {path}")
 
-def export_xgboost(model, onnx_dir):
+def export_xgboost(model, onnx_dir, output_path=None):
     initial_type = [("float_input", OmtFloatTensorType([None, N_FEATURES]))]
     onnx_model = convert_xgboost(model, initial_types=initial_type)
-    path = os.path.join(onnx_dir, "xgboost.onnx")
+    path = output_path or os.path.join(onnx_dir, "xgboost.onnx")
     with open(path, "wb") as f:
         f.write(onnx_model.SerializeToString())
     print(f"  Saved: {path}")
 
-def export_lstm(model, onnx_dir):
+def export_lstm(model, onnx_dir, output_path=None):
     import torch
     pytorch_model = model.module_   # unwrap skorch wrapper
     pytorch_model.eval()
     dummy = torch.zeros(1, 1, N_FEATURES)
-    path = os.path.join(onnx_dir, "lstm.onnx")
+    path = output_path or os.path.join(onnx_dir, "lstm.onnx")
     torch.onnx.export(
         pytorch_model,
         dummy,

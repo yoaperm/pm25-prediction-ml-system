@@ -4,6 +4,7 @@ LSTM Model Module
 LSTM model with RandomizedSearchCV tuning via skorch (PyTorch) wrapper.
 """
 
+import os
 import tempfile
 import numpy as np
 import pandas as pd
@@ -59,7 +60,10 @@ def train_lstm_with_tuning(X_train, y_train, param_grid, random_state=42):
     np.random.seed(random_state)
 
     # Use MPS (Apple Silicon GPU) if available, else CPU
-    if torch.backends.mps.is_available():
+    # PYTORCH_DEVICE env var can force "cpu" to avoid MPS stability issues
+    if os.environ.get("PYTORCH_DEVICE") == "cpu":
+        device = "cpu"
+    elif torch.backends.mps.is_available():
         device = "mps"
     else:
         device = "cpu"
