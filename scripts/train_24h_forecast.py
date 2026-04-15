@@ -94,18 +94,20 @@ def load_station_hourly(station_id: int, db_url: str, data_start: str) -> pd.Dat
     Returns DataFrame with columns [datetime, pm25].
     """
     import sqlalchemy
+    from sqlalchemy import text
 
     engine = sqlalchemy.create_engine(db_url)
-    query  = """
+    query  = text("""
         SELECT timestamp AS datetime, pm25
         FROM   pm25_raw_hourly
-        WHERE  station_id = %(station_id)s
-          AND  timestamp  >= %(data_start)s
+        WHERE  station_id = :station_id
+          AND  timestamp  >= :data_start
           AND  pm25       IS NOT NULL
         ORDER  BY timestamp
-    """
-    df = pd.read_sql(query, engine, params={"station_id": station_id,
-                                             "data_start": data_start})
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn, params={"station_id": station_id,
+                                               "data_start": data_start})
     engine.dispose()
 
     if df.empty:
