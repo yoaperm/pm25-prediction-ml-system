@@ -177,7 +177,7 @@ def export_onnx(model, model_key: str, n_features: int,
     """Export a single-output model to ONNX."""
     if is_lstm:
         import torch
-        pytorch_model = model.module_
+        pytorch_model = model   # already a raw nn.Module
         pytorch_model.eval()
         dummy = torch.zeros(1, 1, n_features)
         torch.onnx.export(
@@ -321,13 +321,11 @@ def train_station_24h(station_id: int, db_url: str, splits: dict):
         results.append({"model": "XGBoost", **metrics, "val_MAE": val_mae})
         print(f"  XGBoost            MAE={metrics['MAE']:.4f}  val_MAE={val_mae:.4f}  params={grid.best_params_}")
 
-    # ── 5. LSTM (single output: T+24) ──
+    # ── 5. LSTM (single output: T+24, pure PyTorch loop + manual early stopping) ──
     with mlflow.start_run(run_name="LSTM_24h"):
         import torch
         import torch.nn as nn
-        from skorch import NeuralNetRegressor
-        from skorch.callbacks import EarlyStopping
-        from skorch.dataset import Dataset
+        from torch.utils.data import TensorDataset, DataLoader
 
         class LSTMForecast(nn.Module):
             """LSTM → single value (T+24)."""
@@ -343,47 +341,71 @@ def train_station_24h(station_id: int, db_url: str, splits: dict):
                 out, _ = self.lstm(x)
                 return self.fc(out[:, -1, :])   # (batch, 1)
 
-        device = "cpu" if os.environ.get("PYTORCH_DEVICE") == "cpu" else (
+        device_str = "cpu" if os.environ.get("PYTORCH_DEVICE") == "cpu" else (
             "mps" if torch.backends.mps.is_available() else "cpu"
         )
         torch.set_num_threads(1)
-        print(f"  LSTM device: {device}")
+        print(f"  LSTM device: {device_str}")
 
-        # Subsample every 4th row — consecutive rows are highly correlated
-        X_lstm     = X_train[::4].reshape(-1, 1, n_features)
-        y_lstm     = y_train[::4].reshape(-1, 1)
-        X_val_3d   = X_val.reshape(-1, 1, n_features)
-        y_val_lstm = y_val.reshape(-1, 1)
+        # Subsample every 4th row — consecutive hours are highly correlated
+        X_tr = torch.FloatTensor(X_train[::4].reshape(-1, 1, n_features))
+        y_tr = torch.FloatTensor(y_train[::4])
+        X_va = torch.FloatTensor(X_val.reshape(-1, 1, n_features))
+        y_va = torch.FloatTensor(y_val)
+        X_te = torch.FloatTensor(X_test.reshape(-1, 1, n_features))
 
-        val_dataset = Dataset(X_val_3d, y_val_lstm)
+        train_loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=512, shuffle=False)
 
-        net = NeuralNetRegressor(
-            module=LSTMForecast,
-            module__input_size=n_features,
-            criterion=nn.L1Loss,
-            optimizer=torch.optim.Adam,
-            max_epochs=30,
-            batch_size=512,
-            train_split=None,
-            device=device,
-            verbose=0,
-            iterator_train__num_workers=0,
-            iterator_valid__num_workers=0,
-            callbacks=[EarlyStopping(patience=5, monitor="valid_loss")],
-        )
-        net.set_params(module__hidden_size=64, module__dropout=0.1, optimizer__lr=0.001,
-                       train_split=lambda X, y: (Dataset(X, y), val_dataset))
-        net.fit(X_lstm, y_lstm)
+        lstm_model = LSTMForecast(input_size=n_features).to(device_str)
+        optimizer  = torch.optim.Adam(lstm_model.parameters(), lr=0.001)
+        criterion  = nn.L1Loss()
 
-        preds   = net.predict(X_test_3d).flatten()
+        best_val_loss = float("inf")
+        patience_left = 5
+        best_state    = None
+        n_epochs      = 0
+
+        for epoch in range(30):
+            lstm_model.train()
+            for xb, yb in train_loader:
+                xb, yb = xb.to(device_str), yb.to(device_str)
+                optimizer.zero_grad()
+                loss = criterion(lstm_model(xb).squeeze(-1), yb)
+                loss.backward()
+                optimizer.step()
+
+            lstm_model.eval()
+            with torch.no_grad():
+                val_loss = criterion(
+                    lstm_model(X_va.to(device_str)).squeeze(-1),
+                    y_va.to(device_str)
+                ).item()
+
+            n_epochs += 1
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state    = {k: v.cpu().clone() for k, v in lstm_model.state_dict().items()}
+                patience_left = 5
+            else:
+                patience_left -= 1
+                if patience_left == 0:
+                    break
+
+        lstm_model.load_state_dict(best_state)
+        lstm_model.eval()
+
+        with torch.no_grad():
+            preds   = lstm_model(X_te.to(device_str)).squeeze(-1).cpu().numpy()
+            val_prd = lstm_model(X_va.to(device_str)).squeeze(-1).cpu().numpy()
+
         metrics = evaluate_model(y_test, preds)
-        val_mae = evaluate_model(y_val, net.predict(X_val_3d).flatten())["MAE"]
+        val_mae = evaluate_model(y_val, val_prd)["MAE"]
         mlflow.log_params({"hidden_size": 64, "dropout": 0.1, "lr": 0.001,
                            "patience": 5, "station": station_id})
         mlflow.log_metrics({**metrics, "val_MAE": val_mae})
-        trained["lstm"] = ("LSTM", net, metrics, True)
+        trained["lstm"] = ("LSTM", lstm_model, metrics, True)
         results.append({"model": "LSTM", **metrics, "val_MAE": val_mae})
-        print(f"  LSTM               MAE={metrics['MAE']:.4f}  val_MAE={val_mae:.4f}  epochs={len(net.history)}")
+        print(f"  LSTM               MAE={metrics['MAE']:.4f}  val_MAE={val_mae:.4f}  epochs={n_epochs}")
 
     # ── Summary ──
     results_df = pd.DataFrame(results)
