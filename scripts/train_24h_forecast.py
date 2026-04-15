@@ -2,21 +2,31 @@
 24-Hour Ahead PM2.5 Forecasting Script
 =======================================
 Trains models to predict PM2.5 exactly 24 hours ahead (single output).
-Run every hour to get a rolling h+24 forecast.
+Run every hour to get a rolling T+24 forecast.
 
-Data   : data/raw/archived/station_{id}_long.csv
-Output : models/station_{id}_24h/onnx/{model}_{start}_{end}.onnx
-         models/station_{id}_24h/active_model.json
-         results/forecast_24h_results.csv
+Data source: PostgreSQL table pm25_raw_hourly
+  Columns: station_id, timestamp, pm25
+
+Dynamic date splits (relative to today):
+  ├── Train : today - 3y  →  today - 6m   (~2y 6m)
+  ├── Val   : today - 6m  →  today - 3m   (3 months)
+  └── Test  : today - 3m  →  today        (3 months, latest)
+
+Val is used for LSTM early-stopping. GridSearchCV uses TimeSeriesSplit on train only.
+
+Output:
+  models/station_{id}_24h/onnx/{model}_{start}_{end}.onnx
+  models/station_{id}_24h/active_model.json
+  results/forecast_24h_results.csv
 
 Usage:
     PYTHONPATH=src OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTORCH_DEVICE=cpu \\
       python scripts/train_24h_forecast.py
     PYTHONPATH=src OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTORCH_DEVICE=cpu \\
-      python scripts/train_24h_forecast.py --stations 63 65
+      python scripts/train_24h_forecast.py --stations 56 57 58 59 61
 
-Inference (every hour):
-    Load active_model.json → run ONNX with current hour's 19 features → 1 value = PM2.5 at T+24
+    # DB connection (default: postgresql://postgres:postgres@localhost:5432/pm25)
+    PM25_DB_URL=postgresql://user:pass@host:5432/pm25 python scripts/train_24h_forecast.py
 """
 
 import argparse
@@ -24,6 +34,8 @@ import json
 import os
 import sys
 import warnings
+from datetime import datetime, timezone
+from dateutil.relativedelta import relativedelta
 
 import numpy as np
 import pandas as pd
@@ -40,72 +52,111 @@ from evaluate import evaluate_model
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 ROOT        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR    = os.path.join(ROOT, "data", "raw", "archived")
 MODELS_DIR  = os.path.join(ROOT, "models")
 RESULTS_DIR = os.path.join(ROOT, "results")
 
-TRAIN_END      = "2024-12-31"
-TEST_START     = "2025-01-01"
-FORECAST_HOUR  = 24          # single horizon: predict T+24
-RANDOM_STATE   = 42
+FORECAST_HOUR = 24    # single horizon: predict T+24
+RANDOM_STATE  = 42
+
+DEFAULT_DB_URL = "postgresql://postgres:postgres@localhost:5432/pm25"
+
+
+# ── Dynamic date splits ────────────────────────────────────────────────────────
+def get_splits():
+    """
+    Returns (data_start, train_end, val_start, val_end, test_start, test_end)
+    all as date strings, relative to today.
+
+    Timeline:
+      data_start ──── train ────── val_start ── val ── test_start ── test ── today
+       (now-3y)              (now-6m)       (now-3m)
+    """
+    today      = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    data_start = today - relativedelta(years=3)
+    val_start  = today - relativedelta(months=6)
+    test_start = today - relativedelta(months=3)
+
+    return {
+        "data_start":  data_start.strftime("%Y-%m-%d"),
+        "train_end":   (val_start - relativedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"),
+        "val_start":   val_start.strftime("%Y-%m-%d"),
+        "val_end":     (test_start - relativedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"),
+        "test_start":  test_start.strftime("%Y-%m-%d"),
+        "test_end":    today.strftime("%Y-%m-%d"),
+    }
 
 
 # ── Data Loading ───────────────────────────────────────────────────────────────
-def load_station_hourly(station_id: int) -> pd.DataFrame:
+def load_station_hourly(station_id: int, db_url: str, data_start: str) -> pd.DataFrame:
     """
-    Load long-format CSV, filter PM2.5, fill missing hours.
-    Returns DataFrame with columns [datetime, pm25] at hourly frequency.
+    Query pm25_raw_hourly from PostgreSQL for the given station and date range.
+    Reindexes to complete hourly range, fills gaps, clips to [0, 500].
+    Returns DataFrame with columns [datetime, pm25].
     """
-    path = os.path.join(DATA_DIR, f"station_{station_id}_long.csv")
-    df   = pd.read_csv(path, parse_dates=["Date_Time"])
-    pm   = df[df["Parameter"] == "PM2.5"][["Date_Time", "Value"]].copy()
-    pm   = pm.rename(columns={"Date_Time": "datetime", "Value": "pm25"})
-    pm   = pm.sort_values("datetime").drop_duplicates("datetime")
+    import sqlalchemy
 
-    full_range = pd.date_range(pm["datetime"].min(), pm["datetime"].max(), freq="h")
-    pm = pm.set_index("datetime").reindex(full_range).rename_axis("datetime").reset_index()
-    pm["pm25"] = pm["pm25"].ffill().bfill().clip(lower=0, upper=500)
+    engine = sqlalchemy.create_engine(db_url)
+    query  = """
+        SELECT timestamp AS datetime, pm25
+        FROM   pm25_raw_hourly
+        WHERE  station_id = %(station_id)s
+          AND  timestamp  >= %(data_start)s
+          AND  pm25       IS NOT NULL
+        ORDER  BY timestamp
+    """
+    df = pd.read_sql(query, engine, params={"station_id": station_id,
+                                             "data_start": data_start})
+    engine.dispose()
 
-    return pm
+    if df.empty:
+        return df
+
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_localize(None)
+    df = df.sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
+
+    # Fill complete hourly range
+    full_range = pd.date_range(df["datetime"].min(), df["datetime"].max(), freq="h")
+    df = (df.set_index("datetime")
+            .reindex(full_range)
+            .rename_axis("datetime")
+            .reset_index())
+    df["pm25"] = df["pm25"].ffill().bfill().clip(lower=0, upper=500)
+
+    return df
 
 
 # ── Feature Engineering ────────────────────────────────────────────────────────
 def build_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], str]:
     """
-    Build features for T+24 prediction.
+    Build features for T+24 prediction (no data leakage).
 
-    Input features (19, all shifted so no leakage):
-      pm25_lag_1/2/3/6/12/24   — recent PM2.5 history
-      pm25_rolling_mean/std_6/12/24h — smoothed trends
-      pm25_diff_1h / pm25_diff_24h   — rate of change
+    Features (19):
+      pm25_lag_1/2/3/6/12/24      recent PM2.5 history
+      pm25_rolling_mean/std_6/12/24h   smoothed trends
+      pm25_diff_1h / pm25_diff_24h     rate of change
       hour / day_of_week / month / day_of_year / is_weekend
 
     Target:
-      pm25_h24  — PM2.5 exactly 24 hours ahead (shift(-24))
+      pm25_h24  — PM2.5 exactly 24 hours ahead
     """
     df = df.copy().sort_values("datetime").reset_index(drop=True)
-
     feature_cols = []
 
-    # Lag features
     for lag in [1, 2, 3, 6, 12, 24]:
         col = f"pm25_lag_{lag}"
         df[col] = df["pm25"].shift(lag)
         feature_cols.append(col)
 
-    # Rolling statistics (on shifted series — no leakage)
     shifted = df["pm25"].shift(1)
     for window in [6, 12, 24]:
         df[f"pm25_rolling_mean_{window}h"] = shifted.rolling(window).mean()
         df[f"pm25_rolling_std_{window}h"]  = shifted.rolling(window).std()
         feature_cols += [f"pm25_rolling_mean_{window}h", f"pm25_rolling_std_{window}h"]
 
-    # Diff features
     df["pm25_diff_1h"]  = df["pm25"].shift(1).diff(1)
     df["pm25_diff_24h"] = df["pm25"].shift(1).diff(24)
     feature_cols += ["pm25_diff_1h", "pm25_diff_24h"]
 
-    # Time features
     df["hour"]        = df["datetime"].dt.hour
     df["day_of_week"] = df["datetime"].dt.dayofweek
     df["month"]       = df["datetime"].dt.month
@@ -113,9 +164,8 @@ def build_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], str]:
     df["is_weekend"]  = (df["day_of_week"] >= 5).astype(int)
     feature_cols += ["hour", "day_of_week", "month", "day_of_year", "is_weekend"]
 
-    # Single target: PM2.5 exactly 24 hours ahead
-    target_col = "pm25_h24"
-    df[target_col] = df["pm25"].shift(-FORECAST_HOUR)
+    target_col      = "pm25_h24"
+    df[target_col]  = df["pm25"].shift(-FORECAST_HOUR)
 
     df = df.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
     return df, feature_cols, target_col
@@ -158,58 +208,69 @@ def export_onnx(model, model_key: str, n_features: int,
 
 
 # ── Training ───────────────────────────────────────────────────────────────────
-def train_station_24h(station_id: int):
+def train_station_24h(station_id: int, db_url: str, splits: dict):
     print(f"\n{'═'*60}")
     print(f"  STATION {station_id}  —  T+24h Forecast")
     print(f"{'═'*60}")
+    print(f"  Train : {splits['data_start']} → {splits['train_end']}")
+    print(f"  Val   : {splits['val_start']}  → {splits['val_end']}")
+    print(f"  Test  : {splits['test_start']} → {splits['test_end']}")
 
-    # ── Load & engineer features ──
-    hourly = load_station_hourly(station_id)
+    # ── Load from PostgreSQL ──
+    hourly = load_station_hourly(station_id, db_url, splits["data_start"])
+    if hourly.empty:
+        print(f"  Skipping: no data in DB for station {station_id}")
+        return None
     print(f"  Hourly rows: {len(hourly)}  "
           f"({hourly['datetime'].min().date()} → {hourly['datetime'].max().date()})")
 
+    # ── Feature engineering ──
     feat_df, feature_cols, target_col = build_features(hourly)
     n_features = len(feature_cols)
     print(f"  Features: {n_features}  |  Target: {target_col}")
 
-    # ── Train / test split ──
-    train_df = feat_df[feat_df["datetime"] <= TRAIN_END]
-    test_df  = feat_df[feat_df["datetime"] >= TEST_START]
+    # ── Split ──
+    train_df = feat_df[feat_df["datetime"] <  splits["val_start"]]
+    val_df   = feat_df[(feat_df["datetime"] >= splits["val_start"]) &
+                       (feat_df["datetime"] <  splits["test_start"])]
+    test_df  = feat_df[feat_df["datetime"] >= splits["test_start"]]
 
-    if len(train_df) < 500 or len(test_df) < 48:
-        print(f"  Skipping: not enough data (train={len(train_df)}, test={len(test_df)})")
+    print(f"  Rows → train:{len(train_df)}  val:{len(val_df)}  test:{len(test_df)}")
+
+    if len(train_df) < 200 or len(test_df) < 48:
+        print(f"  Skipping: not enough data")
         return None
 
     X_train = train_df[feature_cols].values.astype(np.float32)
     y_train = train_df[target_col].values.astype(np.float32)
+    X_val   = val_df[feature_cols].values.astype(np.float32)
+    y_val   = val_df[target_col].values.astype(np.float32)
     X_test  = test_df[feature_cols].values.astype(np.float32)
     y_test  = test_df[target_col].values.astype(np.float32)
 
     train_start = train_df["datetime"].min().strftime("%Y-%m-%d")
     train_end   = train_df["datetime"].max().strftime("%Y-%m-%d")
 
-    print(f"  Train: {X_train.shape}  Test: {X_test.shape}")
-    print(f"  Date range: {train_start} → {train_end}")
-
-    # 3-D for LSTM (defined here so production comparison can use it)
+    # 3-D for LSTM
     X_test_3d = X_test.reshape(X_test.shape[0], 1, n_features)
 
     mlflow.set_experiment(f"pm25_24h_station_{station_id}")
 
     tscv   = TimeSeriesSplit(n_splits=3)
     n_jobs = int(os.environ.get("GRID_N_JOBS", "-1"))
-    trained = {}   # key → (name, model, metrics, is_lstm)
+    trained = {}
     results = []
 
     # ── 1. Linear Regression ──
     with mlflow.start_run(run_name="LinearRegression_24h"):
         model   = LinearRegression().fit(X_train, y_train)
         metrics = evaluate_model(y_test, model.predict(X_test))
+        val_mae = evaluate_model(y_val, model.predict(X_val))["MAE"]
         mlflow.log_params({"model": "LinearRegression", "station": station_id})
-        mlflow.log_metrics(metrics)
+        mlflow.log_metrics({**metrics, "val_MAE": val_mae})
         trained["linear_regression"] = ("Linear Regression", model, metrics, False)
-        results.append({"model": "Linear Regression", **metrics})
-        print(f"  Linear Regression  MAE={metrics['MAE']:.4f}")
+        results.append({"model": "Linear Regression", **metrics, "val_MAE": val_mae})
+        print(f"  Linear Regression  MAE={metrics['MAE']:.4f}  val_MAE={val_mae:.4f}")
 
     # ── 2. Ridge ──
     with mlflow.start_run(run_name="Ridge_24h"):
@@ -219,11 +280,12 @@ def train_station_24h(station_id: int):
         grid.fit(X_train, y_train)
         model   = grid.best_estimator_
         metrics = evaluate_model(y_test, model.predict(X_test))
+        val_mae = evaluate_model(y_val, model.predict(X_val))["MAE"]
         mlflow.log_params({"alpha": grid.best_params_["alpha"], "station": station_id})
-        mlflow.log_metrics(metrics)
+        mlflow.log_metrics({**metrics, "val_MAE": val_mae})
         trained["ridge_regression"] = ("Ridge Regression", model, metrics, False)
-        results.append({"model": "Ridge Regression", **metrics})
-        print(f"  Ridge Regression   MAE={metrics['MAE']:.4f}  alpha={grid.best_params_['alpha']}")
+        results.append({"model": "Ridge Regression", **metrics, "val_MAE": val_mae})
+        print(f"  Ridge Regression   MAE={metrics['MAE']:.4f}  val_MAE={val_mae:.4f}  alpha={grid.best_params_['alpha']}")
 
     # ── 3. Random Forest ──
     with mlflow.start_run(run_name="RandomForest_24h"):
@@ -235,11 +297,12 @@ def train_station_24h(station_id: int):
         grid.fit(X_train, y_train)
         model   = grid.best_estimator_
         metrics = evaluate_model(y_test, model.predict(X_test))
+        val_mae = evaluate_model(y_val, model.predict(X_val))["MAE"]
         mlflow.log_params({**grid.best_params_, "station": station_id})
-        mlflow.log_metrics(metrics)
+        mlflow.log_metrics({**metrics, "val_MAE": val_mae})
         trained["random_forest"] = ("Random Forest", model, metrics, False)
-        results.append({"model": "Random Forest", **metrics})
-        print(f"  Random Forest      MAE={metrics['MAE']:.4f}  params={grid.best_params_}")
+        results.append({"model": "Random Forest", **metrics, "val_MAE": val_mae})
+        print(f"  Random Forest      MAE={metrics['MAE']:.4f}  val_MAE={val_mae:.4f}  params={grid.best_params_}")
 
     # ── 4. XGBoost ──
     with mlflow.start_run(run_name="XGBoost_24h"):
@@ -251,17 +314,20 @@ def train_station_24h(station_id: int):
         grid.fit(X_train, y_train)
         model   = grid.best_estimator_
         metrics = evaluate_model(y_test, model.predict(X_test))
+        val_mae = evaluate_model(y_val, model.predict(X_val))["MAE"]
         mlflow.log_params({**grid.best_params_, "station": station_id})
-        mlflow.log_metrics(metrics)
+        mlflow.log_metrics({**metrics, "val_MAE": val_mae})
         trained["xgboost"] = ("XGBoost", model, metrics, False)
-        results.append({"model": "XGBoost", **metrics})
-        print(f"  XGBoost            MAE={metrics['MAE']:.4f}  params={grid.best_params_}")
+        results.append({"model": "XGBoost", **metrics, "val_MAE": val_mae})
+        print(f"  XGBoost            MAE={metrics['MAE']:.4f}  val_MAE={val_mae:.4f}  params={grid.best_params_}")
 
     # ── 5. LSTM (single output: T+24) ──
     with mlflow.start_run(run_name="LSTM_24h"):
         import torch
         import torch.nn as nn
         from skorch import NeuralNetRegressor
+        from skorch.callbacks import EarlyStopping
+        from skorch.dataset import Dataset
 
         class LSTMForecast(nn.Module):
             """LSTM → single value (T+24)."""
@@ -284,41 +350,50 @@ def train_station_24h(station_id: int):
         print(f"  LSTM device: {device}")
 
         # Subsample every 4th row — consecutive rows are highly correlated
-        X_lstm = X_train[::4].reshape(-1, 1, n_features)
-        y_lstm = y_train[::4].reshape(-1, 1)
+        X_lstm     = X_train[::4].reshape(-1, 1, n_features)
+        y_lstm     = y_train[::4].reshape(-1, 1)
+        X_val_3d   = X_val.reshape(-1, 1, n_features)
+        y_val_lstm = y_val.reshape(-1, 1)
+
+        val_dataset = Dataset(X_val_3d, y_val_lstm)
 
         net = NeuralNetRegressor(
             module=LSTMForecast,
             module__input_size=n_features,
             criterion=nn.L1Loss,
             optimizer=torch.optim.Adam,
-            max_epochs=10,
+            max_epochs=30,
             batch_size=512,
             train_split=None,
             device=device,
-            verbose=1,
+            verbose=0,
             iterator_train__num_workers=0,
             iterator_valid__num_workers=0,
+            callbacks=[EarlyStopping(patience=5, monitor="valid_loss")],
         )
-        net.set_params(module__hidden_size=64, module__dropout=0.1, optimizer__lr=0.001)
+        net.set_params(module__hidden_size=64, module__dropout=0.1, optimizer__lr=0.001,
+                       train_split=lambda X, y: (Dataset(X, y), val_dataset))
         net.fit(X_lstm, y_lstm)
 
         preds   = net.predict(X_test_3d).flatten()
         metrics = evaluate_model(y_test, preds)
-        mlflow.log_params({"hidden_size": 64, "dropout": 0.1, "lr": 0.001, "station": station_id})
-        mlflow.log_metrics(metrics)
+        val_mae = evaluate_model(y_val, net.predict(X_val_3d).flatten())["MAE"]
+        mlflow.log_params({"hidden_size": 64, "dropout": 0.1, "lr": 0.001,
+                           "patience": 5, "station": station_id})
+        mlflow.log_metrics({**metrics, "val_MAE": val_mae})
         trained["lstm"] = ("LSTM", net, metrics, True)
-        results.append({"model": "LSTM", **metrics})
-        print(f"  LSTM               MAE={metrics['MAE']:.4f}")
+        results.append({"model": "LSTM", **metrics, "val_MAE": val_mae})
+        print(f"  LSTM               MAE={metrics['MAE']:.4f}  val_MAE={val_mae:.4f}  epochs={len(net.history)}")
 
     # ── Summary ──
     results_df = pd.DataFrame(results)
-    print(f"\n  {'Model':<25} {'MAE':>7} {'RMSE':>7} {'R2':>7}")
-    print(f"  {'─'*46}")
+    print(f"\n  {'Model':<25} {'MAE':>7} {'RMSE':>7} {'R2':>7} {'val_MAE':>9}")
+    print(f"  {'─'*55}")
     for _, row in results_df.iterrows():
-        print(f"  {row['model']:<25} {row['MAE']:>7.4f} {row['RMSE']:>7.4f} {row['R2']:>7.4f}")
+        print(f"  {row['model']:<25} {row['MAE']:>7.4f} {row['RMSE']:>7.4f} "
+              f"{row['R2']:>7.4f} {row['val_MAE']:>9.4f}")
 
-    best_key                              = min(trained, key=lambda k: trained[k][2]["MAE"])
+    best_key                               = min(trained, key=lambda k: trained[k][2]["MAE"])
     best_name, best_model, best_m, is_lstm = trained[best_key]
     new_mae = best_m["MAE"]
     print(f"\n  Best: {best_name}  MAE={new_mae:.4f}")
@@ -336,14 +411,13 @@ def train_station_24h(station_id: int):
         onnx_prod = os.path.join(models_dir, "onnx", old_info["onnx_file"])
         if os.path.exists(onnx_prod):
             import onnxruntime as rt
-            sess     = rt.InferenceSession(onnx_prod, providers=["CPUExecutionProvider"])
-            in_name  = sess.get_inputs()[0].name
-            out_name = sess.get_outputs()[0].name
+            sess       = rt.InferenceSession(onnx_prod, providers=["CPUExecutionProvider"])
+            in_name    = sess.get_inputs()[0].name
+            out_name   = sess.get_outputs()[0].name
             X_in       = X_test_3d if old_info.get("is_lstm") else X_test
             preds_prod = sess.run([out_name], {in_name: X_in})[0].flatten()
             if preds_prod.shape[0] != y_test.shape[0]:
-                # Old model was multi-output — incompatible, treat as first deploy
-                print("  Prod model is multi-output (incompatible) — treating as first deploy")
+                print("  Prod model incompatible shape — treating as first deploy")
                 old_info = None
             else:
                 prod_mae = evaluate_model(y_test, preds_prod)["MAE"]
@@ -381,7 +455,7 @@ def train_station_24h(station_id: int):
         delta  = round(prod_mae - new_mae, 4)
         print(f"  → NOT DEPLOYED  new {new_mae:.4f} >= prod {prod_mae:.4f}")
 
-    # ── Append summary report ──
+    # ── Append report ──
     os.makedirs(RESULTS_DIR, exist_ok=True)
     report_path = os.path.join(RESULTS_DIR, "forecast_24h_results.csv")
     row = {
@@ -393,6 +467,7 @@ def train_station_24h(station_id: int):
         "prod_mae":    prod_mae,
         "mae_delta":   delta,
         "status":      status,
+        "run_date":    datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
     exists = os.path.exists(report_path)
     pd.DataFrame([row]).to_csv(report_path, mode="a", header=not exists, index=False)
@@ -403,13 +478,21 @@ def train_station_24h(station_id: int):
 # ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train T+24h PM2.5 forecasting models")
-    parser.add_argument("--stations", nargs="+", type=int, default=[63, 64, 65, 66, 67])
+    parser.add_argument("--stations", nargs="+", type=int, default=[56, 57, 58, 59, 61])
+    parser.add_argument("--db-url", default=os.environ.get("PM25_DB_URL", DEFAULT_DB_URL),
+                        help="PostgreSQL connection URL")
     args = parser.parse_args()
 
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db"))
 
+    splits = get_splits()
+    print(f"Date splits (today = {datetime.now().date()}):")
+    print(f"  Train : {splits['data_start']} → {splits['train_end']}")
+    print(f"  Val   : {splits['val_start']}  → {splits['val_end']}")
+    print(f"  Test  : {splits['test_start']} → {splits['test_end']}")
+
     for sid in args.stations:
-        train_station_24h(sid)
+        train_station_24h(sid, args.db_url, splits)
 
     print(f"\n{'═'*60}")
     print("T+24h FORECAST DEPLOYMENT SUMMARY")
@@ -417,6 +500,6 @@ if __name__ == "__main__":
     report_path = os.path.join(RESULTS_DIR, "forecast_24h_results.csv")
     if os.path.exists(report_path):
         report = pd.read_csv(report_path)
-        latest = report.sort_values("train_start").groupby("station_id").tail(1)
+        latest = report.sort_values("run_date").groupby("station_id").tail(1)
         print(latest[["station_id", "best_model", "new_mae", "prod_mae", "status"]].to_string(index=False))
     print(f"\nReport: {report_path}")
