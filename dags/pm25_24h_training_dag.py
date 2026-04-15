@@ -510,6 +510,60 @@ def _evaluate(**context):
     print(f"\nStation {station_id} best: {df.loc[df['MAE'].idxmin(), 'model']}")
 
 
+# ── Helper: Publish to Triton ─────────────────────────────────────────────────
+def _publish_to_triton(onnx_path, station_id, n_features, triton_repo="/app/triton_model_repo"):
+    """
+    Publish ONNX model to Triton repository by:
+    1. Creating triton_model_repo/pm25_{station_id}/1/ directory
+    2. Copying ONNX file to model.onnx
+    3. Creating config.pbtxt with correct input dimensions
+    """
+    import os
+    import shutil
+
+    model_name = f"pm25_{station_id}"
+    model_dir = os.path.join(triton_repo, model_name)
+    version_dir = os.path.join(model_dir, "1")
+
+    # Create directory structure
+    os.makedirs(version_dir, exist_ok=True)
+
+    # Copy ONNX file
+    dest_onnx = os.path.join(version_dir, "model.onnx")
+    shutil.copy2(onnx_path, dest_onnx)
+    print(f"  ✓ Copied ONNX to Triton: {dest_onnx}")
+
+    # Create config.pbtxt
+    config_content = f'''name: "{model_name}"
+backend: "onnxruntime"
+max_batch_size: 32
+
+input [
+  {{
+    name: "float_input"
+    data_type: TYPE_FP32
+    dims: [ {n_features} ]
+  }}
+]
+
+output [
+  {{
+    name: "variable"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+  }}
+]
+
+dynamic_batching {{ }}
+'''
+
+    config_path = os.path.join(model_dir, "config.pbtxt")
+    with open(config_path, "w") as f:
+        f.write(config_content)
+    print(f"  ✓ Created Triton config: {config_path}")
+    print(f"  ✓ Model '{model_name}' published to Triton (will load in ~30s)")
+
+
 # ── Task 4: Compare vs production, deploy if better ──────────────────────────
 def _compare_and_deploy(**context):
     import json
@@ -598,6 +652,17 @@ def _compare_and_deploy(**context):
         status = "DEPLOYED"
         delta  = round(prod_mae - new_mae, 4) if prod_mae is not None else None
         print(f"  → DEPLOYED  {onnx_dest}")
+
+        # Publish to Triton
+        try:
+            _publish_to_triton(
+                onnx_path=onnx_dest,
+                station_id=station_id,
+                n_features=n,
+                triton_repo="/app/triton_model_repo"
+            )
+        except Exception as e:
+            print(f"  ⚠ Triton publish failed (model still deployed to models/): {e}")
     else:
         status = "NOT_DEPLOYED"
         delta  = round(prod_mae - new_mae, 4)
