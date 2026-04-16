@@ -27,6 +27,7 @@ x-airflow-common: &airflow-common
     - ./models:/app/models
     - ./results:/app/results
     - airflow_logs:/opt/airflow/logs
+#    - ./triton_model_repo:/app/triton_model_repo
 
 # -----------------------------------------------------------------------
 # Services
@@ -131,9 +132,9 @@ services:
       --repository-poll-secs=30
       --log-verbose=0
     ports:
-      - "8010:8000"   # HTTP inference
-      - "8011:8001"   # gRPC inference
-      - "8012:8002"   # metrics
+      - "8020:8000"   # HTTP inference
+      - "8021:8001"   # gRPC inference
+      - "8022:8002"   # metrics
     volumes:
       - ./triton_model_repo:/models
     shm_size: "256m"
@@ -151,7 +152,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     ports:
-      - "8001:8000"
+      - "8005:8000"
     volumes:
       - ./models:/app/models
       - ./results:/app/results
@@ -175,7 +176,7 @@ services:
       context: .
       dockerfile: Dockerfile.streamlit
     ports:
-      - "8501:8501"
+      - "8505:8501"
     volumes:
       - ./results:/app/results
     environment:

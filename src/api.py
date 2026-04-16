@@ -150,25 +150,50 @@ class RetrainResponse(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _build_features(history: List[DailyReading]) -> pd.DataFrame:
-    df = pd.DataFrame([{"date": r.date, "pm25": r.pm25} for r in history])
+    # Create a DataFrame from the history and ensure it's sorted by date
+    df = pd.DataFrame([r.dict() for r in history])
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
 
+    # The prediction target is the day after the last historical date
+    prediction_date = df["date"].iloc[-1] + datetime.timedelta(days=1)
+
+    # Append a placeholder row for the prediction date to generate its features
+    # The 'pm25' value for this new row doesn't matter as it won't be used as a feature
+    new_row = pd.DataFrame([{"date": prediction_date, "pm25": 0}])
+    df = pd.concat([df, new_row], ignore_index=True)
+
+    # Feature Engineering (using shift to prevent data leakage)
     for lag in [1, 2, 3, 5, 7]:
         df[f"pm25_lag_{lag}"] = df["pm25"].shift(lag)
 
     for window in [3, 7, 14]:
-        df[f"pm25_rolling_mean_{window}"] = df["pm25"].shift(1).rolling(window).mean()
-        df[f"pm25_rolling_std_{window}"]  = df["pm25"].shift(1).rolling(window).std()
+        # Shift by 1 to ensure rolling features are based on past data
+        shifted_pm25 = df["pm25"].shift(1)
+        df[f"pm25_rolling_mean_{window}"] = shifted_pm25.rolling(window).mean()
+        df[f"pm25_rolling_std_{window}"] = shifted_pm25.rolling(window).std()
 
-    df["day_of_week"]    = df["date"].dt.dayofweek
-    df["month"]          = df["date"].dt.month
-    df["day_of_year"]    = df["date"].dt.dayofyear
-    df["is_weekend"]     = (df["day_of_week"] >= 5).astype(int)
-    df["pm25_diff_1"]    = df["pm25"].shift(1).diff(1)
-    df["pm25_pct_change_1"] = df["pm25"].shift(1).pct_change(1)
+    df["day_of_week"] = df["date"].dt.dayofweek
+    df["month"] = df["date"].dt.month
+    df["day_of_year"] = df["date"].dt.dayofyear
+    df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
+    df["pm25_diff_1"] = df["pm25"].shift(1).diff(1)
+    df["pm25_pct_change_1"] = df["pm25"].shift(1).pct_change(1).replace([np.inf, -np.inf], np.nan)
 
-    return df.dropna(subset=FEATURE_COLS)
+    # Return only the last row, which corresponds to the prediction_date
+    # This row now contains all the engineered features required for prediction.
+    # We also drop any rows that have NaN values in the feature columns.
+    final_features = df.iloc[[-1]].dropna(subset=FEATURE_COLS)
+
+    return final_features[FEATURE_COLS] if not final_features.empty else pd.DataFrame()
+    # Drop rows with NaN values that were created during feature engineering
+    # and ensure we only have the required feature columns.
+    valid_features_df = df.dropna(subset=FEATURE_COLS)
+    if valid_features_df.empty:
+        return valid_features_df
+
+    # Ensure all feature columns are present before returning
+    return valid_features_df[FEATURE_COLS]
 
 
 def _append_csv(path: str, row: dict):
@@ -210,39 +235,48 @@ def model_info():
 
 @app.post("/predict", response_model=PredictResponse, dependencies=[Depends(verify_api_key)])
 def predict(req: PredictRequest):
+    # The last date in the history is the day before the prediction date
+    last_history_date = req.history[-1].date
+    prediction_date = last_history_date + datetime.timedelta(days=1)
+
+    # Build features for the prediction date
     feat_df = _build_features(req.history)
 
     if feat_df.empty:
-        raise HTTPException(status_code=422, detail="Not enough valid rows after feature engineering.")
+        raise HTTPException(
+            status_code=422,
+            detail="Could not generate features for the prediction date. "
+                   "Ensure history is consecutive and sufficient."
+        )
 
-    last_row = feat_df.iloc[[-1]]
-    X        = last_row[FEATURE_COLS].values.astype(np.float32)
-    X_in     = X.reshape(X.shape[0], 1, X.shape[1]) if IS_LSTM else X
+    # Prepare the feature vector for the model
+    X = feat_df[FEATURE_COLS].values.astype(np.float32)
+    X_in = X.reshape(1, 1, -1) if IS_LSTM else X
 
+    # Perform inference
     if INFERENCE_BACKEND == "triton":
         import tritonclient.http as _th
         inp = _th.InferInput(_input_name, X_in.shape, "FP32")
         inp.set_data_from_numpy(X_in)
         out = _th.InferRequestedOutput(_output_name)
         result = _triton_client.infer(model_name=TRITON_MODEL_NAME, inputs=[inp], outputs=[out])
-        prediction = float(np.round(result.as_numpy(_output_name).flatten()[0], 2))
+        prediction_value = float(np.round(result.as_numpy(_output_name).flatten()[0], 2))
     else:
-        prediction = float(np.round(session.run([_output_name], {_input_name: X_in})[0].flatten()[0], 2))
-    last_date    = last_row["date"].iloc[0].date()
-    next_date    = last_date + datetime.timedelta(days=1)
+        prediction_value = float(np.round(session.run([_output_name], {_input_name: X_in})[0].flatten()[0], 2))
 
-    # Log prediction so monitoring can later compare against actuals
+    # Log the prediction
     _append_csv(PREDICTIONS_LOG, {
-        "prediction_date": str(next_date),
-        "predicted_pm25":  prediction,
-        "model":           MODEL_NAME,
+        "prediction_date": str(prediction_date),
+        "predicted_pm25":  prediction_value,
+        "model":           _active_info.get("model_key", MODEL_NAME),
         "created_at":      datetime.datetime.now(datetime.UTC).isoformat(),
     })
 
+    # Return the response
     return PredictResponse(
-        prediction_date=next_date,
-        predicted_pm25=prediction,
-        model=MODEL_NAME,
+        prediction_date=prediction_date,
+        predicted_pm25=prediction_value,
+        model=_active_info.get("model_key", MODEL_NAME),
     )
 
 

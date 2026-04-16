@@ -105,7 +105,7 @@ monitoring:
   # PSI > 0.2  → significant shift → retrain
   psi:
     enabled: true
-    threshold: 0.2      # retrain if PSI > this
+    threshold: 1      # retrain if PSI > this
     bins: 10            # number of buckets for PSI calculation
 
 # MLflow experiment tracking
