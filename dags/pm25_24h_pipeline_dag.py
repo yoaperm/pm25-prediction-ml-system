@@ -2,7 +2,7 @@
 PM2.5 T+24h Monitoring & Auto-retrain Pipeline DAG
 ====================================================
 Daily health check for stations 56/57/58/59/61.
-Queries PostgreSQL, runs active ONNX model, computes MAE + PSI
+Queries PostgreSQL, runs active ONNX model, computes RMSE + PSI
 on a rolling 30-day window, then auto-triggers pm25_24h_training
 for any station that is degraded.
 
@@ -16,8 +16,8 @@ Task graph:
     check_station_61 ──┘
 
 Thresholds (overridable via Airflow Variables):
-    MAE_THRESHOLD_24H  default 9.0  µg/m³
-    PSI_THRESHOLD_24H  default 0.2
+    RMSE_THRESHOLD_24H  default 13.0  µg/m³
+    PSI_THRESHOLD_24H   default 0.2
 
 Trigger manually:
     No config needed — checks all stations automatically.
@@ -39,7 +39,7 @@ STATIONS          = [56, 57, 58, 59, 61]
 FORECAST_HOUR     = 24
 ROLLING_DAYS      = 30      # evaluation window
 MIN_PAIRS         = 48      # minimum hours needed for meaningful check
-MAE_THRESHOLD     = 9.0     # µg/m³  — retrain if exceeded
+RMSE_THRESHOLD    = 13.0    # µg/m³  — retrain if exceeded
 PSI_THRESHOLD     = 0.2     # retrain if exceeded
 
 
@@ -153,12 +153,12 @@ def _check_station_health(station_id, **context):
 
     ti         = context["ti"]
     db_url     = _db_url()
-    mae_thresh = _get_threshold("MAE_THRESHOLD_24H", MAE_THRESHOLD)
+    rmse_thresh = _get_threshold("RMSE_THRESHOLD_24H", RMSE_THRESHOLD)
     psi_thresh = _get_threshold("PSI_THRESHOLD_24H", PSI_THRESHOLD)
 
     print(f"\n{'─'*50}")
     print(f"  Checking station {station_id}")
-    print(f"  MAE threshold={mae_thresh}  PSI threshold={psi_thresh}")
+    print(f"  RMSE threshold={rmse_thresh}  PSI threshold={psi_thresh}")
 
     # ── Check active model exists ──
     models_dir = f"{MODELS_DIR}/station_{station_id}_24h"
@@ -168,7 +168,7 @@ def _check_station_health(station_id, **context):
         print(f"  [SKIP] No active model found for station {station_id}")
         ti.xcom_push(key=f"health_{station_id}", value={
             "station_id": station_id, "status": "no_model",
-            "needs_retraining": False, "mae": None, "psi": None,
+            "needs_retraining": False, "rmse": None, "mae": None, "psi": None,
         })
         return
 
@@ -180,7 +180,7 @@ def _check_station_health(station_id, **context):
         print(f"  [SKIP] ONNX file missing: {onnx_path}")
         ti.xcom_push(key=f"health_{station_id}", value={
             "station_id": station_id, "status": "missing_onnx",
-            "needs_retraining": True, "mae": None, "psi": None,
+            "needs_retraining": True, "rmse": None, "mae": None, "psi": None,
         })
         return
 
@@ -192,7 +192,7 @@ def _check_station_health(station_id, **context):
         print(f"  [SKIP] Not enough data for station {station_id}: {len(hourly)} rows")
         ti.xcom_push(key=f"health_{station_id}", value={
             "station_id": station_id, "status": "insufficient_data",
-            "needs_retraining": False, "mae": None, "psi": None,
+            "needs_retraining": False, "rmse": None, "mae": None, "psi": None,
         })
         return
 
@@ -207,7 +207,7 @@ def _check_station_health(station_id, **context):
         print(f"  [SKIP] Only {len(window_df)} rows in rolling window (need {MIN_PAIRS})")
         ti.xcom_push(key=f"health_{station_id}", value={
             "station_id": station_id, "status": "insufficient_window",
-            "needs_retraining": False, "mae": None, "psi": None,
+            "needs_retraining": False, "rmse": None, "mae": None, "psi": None,
         })
         return
 
@@ -231,23 +231,25 @@ def _check_station_health(station_id, **context):
         print(f"  [WARN] Shape mismatch pred={y_pred.shape} actual={y_actual.shape} — skipping")
         ti.xcom_push(key=f"health_{station_id}", value={
             "station_id": station_id, "status": "shape_mismatch",
-            "needs_retraining": True, "mae": None, "psi": None,
+            "needs_retraining": True, "rmse": None, "mae": None, "psi": None,
         })
         return
 
-    # ── Compute MAE + PSI ──
+    # ── Compute RMSE + MAE + PSI ──
+    rmse = round(float(np.sqrt(np.mean((y_actual - y_pred) ** 2))), 4)
     mae = round(float(np.mean(np.abs(y_actual - y_pred))), 4)
     psi = _compute_psi(y_pred, y_actual)
 
-    mae_degraded = mae > mae_thresh
+    rmse_degraded = rmse > rmse_thresh
     psi_degraded = psi > psi_thresh
-    needs_retrain = mae_degraded or psi_degraded
+    needs_retrain = rmse_degraded or psi_degraded
 
-    mae_status = "DEGRADED" if mae_degraded else "OK"
+    rmse_status = "DEGRADED" if rmse_degraded else "OK"
     psi_label  = "stable" if psi < 0.1 else ("moderate" if psi < 0.2 else "significant")
     psi_status = "DEGRADED" if psi_degraded else "OK"
 
-    print(f"  MAE={mae:.4f}  threshold={mae_thresh}  [{mae_status}]")
+    print(f"  RMSE={rmse:.4f}  threshold={rmse_thresh}  [{rmse_status}]")
+    print(f"  MAE={mae:.4f}  (secondary metric)")
     print(f"  PSI={psi:.4f}  threshold={psi_thresh}  status={psi_label}  [{psi_status}]")
     print(f"  Pairs={len(window_df)}  needs_retraining={needs_retrain}")
 
@@ -255,9 +257,10 @@ def _check_station_health(station_id, **context):
         "station_id":       station_id,
         "status":           "degraded" if needs_retrain else "healthy",
         "needs_retraining": needs_retrain,
+        "rmse":             rmse,
+        "rmse_threshold":   rmse_thresh,
+        "rmse_degraded":    rmse_degraded,
         "mae":              mae,
-        "mae_threshold":    mae_thresh,
-        "mae_degraded":     mae_degraded,
         "psi":              psi,
         "psi_threshold":    psi_thresh,
         "psi_status":       psi_label,
@@ -289,7 +292,7 @@ def _trigger_retraining(**context):
         health = ti.xcom_pull(key=f"health_{sid}")
         if health and health.get("needs_retraining"):
             degraded.append(sid)
-            print(f"  Station {sid} DEGRADED  MAE={health.get('mae')}  PSI={health.get('psi')}")
+            print(f"  Station {sid} DEGRADED  RMSE={health.get('rmse')}  MAE={health.get('mae')}  PSI={health.get('psi')}")
 
     if not degraded:
         print("  All stations healthy — no retraining needed.")
@@ -311,18 +314,19 @@ def _trigger_retraining(**context):
 # ── Summary ───────────────────────────────────────────────────────────────────
 def _print_summary(**context):
     ti = context["ti"]
-    print(f"\n{'═'*55}")
+    print(f"\n{'═'*65}")
     print("  T+24h MONITORING SUMMARY")
-    print(f"{'═'*55}")
-    print(f"  {'Station':<10} {'Status':<12} {'MAE':>7} {'PSI':>7} {'Model':<20}")
-    print(f"  {'─'*55}")
+    print(f"{'═'*65}")
+    print(f"  {'Station':<10} {'Status':<12} {'RMSE':>7} {'MAE':>7} {'PSI':>7} {'Model':<20}")
+    print(f"  {'─'*65}")
     for sid in STATIONS:
         h = ti.xcom_pull(key=f"health_{sid}") or {}
+        rmse  = f"{h['rmse']:.4f}"  if h.get("rmse")  is not None else "N/A"
         mae   = f"{h['mae']:.4f}"   if h.get("mae")   is not None else "N/A"
         psi   = f"{h['psi']:.4f}"   if h.get("psi")   is not None else "N/A"
         model = h.get("model_key", "N/A")
         status= h.get("status", "unknown").upper()
-        print(f"  {sid:<10} {status:<12} {mae:>7} {psi:>7} {model:<20}")
+        print(f"  {sid:<10} {status:<12} {rmse:>7} {mae:>7} {psi:>7} {model:<20}")
 
 
 # ── DAG definition ────────────────────────────────────────────────────────────

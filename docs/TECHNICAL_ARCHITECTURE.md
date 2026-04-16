@@ -405,7 +405,7 @@ assert missing_ratio < 0.2, "Too much missing data (>20%)"
    ├── Calculate Rolling MAE (30 days)
    ├── Calculate PSI (feature drift)
    ├── Check Thresholds
-   │   ├── MAE > 9.0 → Trigger Retrain
+   │   ├── RMSE > 13.0 → Trigger Retrain
    │   └── PSI > 0.2 → Trigger Retrain
    └── Log Results
 ```
@@ -737,7 +737,7 @@ AlertManager (Notifications)
 
 | Metric | Type | Threshold |
 |--------|------|-----------|
-| Model MAE | Business | Alert if > 9.0 µg/m³ |
+| Model RMSE | Business | Alert if > 13.0 µg/m³ |
 | Feature PSI | Business | Alert if > 0.2 |
 | Inference latency | System | Alert if > 100ms (p99) |
 | Triton error rate | System | Alert if > 1% |
