@@ -133,7 +133,7 @@ docker exec pm25-prediction-ml-system-airflow-scheduler-1 \
 ```
 
 **Auto-retrains when**:
-- MAE > 9.0 µg/m³
+- RMSE > 13.0 µg/m³ (rolling 14-day window)
 - PSI > 0.2 (feature drift)
 
 ---
