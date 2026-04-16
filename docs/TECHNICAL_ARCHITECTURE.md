@@ -402,7 +402,7 @@ assert missing_ratio < 0.2, "Too much missing data (>20%)"
    └── Response → Client
 
 4. Monitoring Phase (daily at 02:00 UTC)
-   ├── Calculate Rolling MAE (30 days)
+   ├── Calculate Rolling RMSE (14 days, 2 weekly cycles)
    ├── Calculate PSI (feature drift)
    ├── Check Thresholds
    │   ├── RMSE > 13.0 → Trigger Retrain

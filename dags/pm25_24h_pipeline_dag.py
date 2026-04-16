@@ -3,8 +3,8 @@ PM2.5 T+24h Monitoring & Auto-retrain Pipeline DAG
 ====================================================
 Daily health check for stations 56/57/58/59/61.
 Queries PostgreSQL, runs active ONNX model, computes RMSE + PSI
-on a rolling 30-day window, then auto-triggers pm25_24h_training
-for any station that is degraded.
+on a rolling 14-day window (2 weekly cycles), then auto-triggers
+pm25_24h_training for any station that is degraded.
 
 Schedule: daily at 02:00 UTC
 
@@ -37,8 +37,8 @@ RESULTS_DIR = "/app/results"
 DEFAULT_DB_URL    = "postgresql://postgres:postgres@postgres:5432/pm25"
 STATIONS          = [56, 57, 58, 59, 61]
 FORECAST_HOUR     = 24
-ROLLING_DAYS      = 30      # evaluation window
-MIN_PAIRS         = 48      # minimum hours needed for meaningful check
+ROLLING_DAYS      = 14      # evaluation window (2 weekly cycles)
+MIN_PAIRS         = 168     # minimum hours needed (7 days)
 RMSE_THRESHOLD    = 13.0    # µg/m³  — retrain if exceeded
 PSI_THRESHOLD     = 0.2     # retrain if exceeded
 
