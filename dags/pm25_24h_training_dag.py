@@ -270,7 +270,7 @@ def _train_linear(**context):
                    _models_dir(station_id),
                    output_path=_tmp_onnx(station_id, "linear_regression"),
                    n_features=meta["n_features"])
-    print(f"  LinearRegression  MAE={metrics['MAE']:.4f}")
+    print(f"  LinearRegression  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}")
 
 
 # ── Task 2b: Ridge ────────────────────────────────────────────────────────────
@@ -302,7 +302,7 @@ def _train_ridge(**context):
                    _models_dir(station_id),
                    output_path=_tmp_onnx(station_id, "ridge_regression"),
                    n_features=meta["n_features"])
-    print(f"  Ridge  MAE={metrics['MAE']:.4f}  alpha={grid.best_params_['alpha']}")
+    print(f"  Ridge  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}  alpha={grid.best_params_['alpha']}")
 
 
 # ── Task 2c: Random Forest ────────────────────────────────────────────────────
@@ -337,7 +337,7 @@ def _train_random_forest(**context):
                    _models_dir(station_id),
                    output_path=_tmp_onnx(station_id, "random_forest"),
                    n_features=meta["n_features"])
-    print(f"  RandomForest  MAE={metrics['MAE']:.4f}  params={grid.best_params_}")
+    print(f"  RandomForest  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}  params={grid.best_params_}")
 
 
 # ── Task 2d: XGBoost ─────────────────────────────────────────────────────────
@@ -376,7 +376,7 @@ def _train_xgboost(**context):
     )
     with open(_tmp_onnx(station_id, "xgboost"), "wb") as f:
         f.write(onnx_model.SerializeToString())
-    print(f"  XGBoost  MAE={metrics['MAE']:.4f}  params={grid.best_params_}")
+    print(f"  XGBoost  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}  params={grid.best_params_}")
 
 
 # ── Task 2e: LSTM (single output T+24, val-based early stopping) ──────────────
@@ -472,7 +472,7 @@ def _train_lstm(**context):
         dynamic_axes={"lstm_input": {0: "batch"}, "output": {0: "batch"}},
         opset_version=17,
     )
-    print(f"  LSTM  MAE={metrics['MAE']:.4f}  epochs={epochs_done}  device={device_str}")
+    print(f"  LSTM  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}  epochs={epochs_done}  device={device_str}")
 
 
 # ── Task 3: Evaluate all 5 temp models ───────────────────────────────────────
@@ -507,7 +507,8 @@ def _evaluate(**context):
         results.append({"model": name, **metrics})
 
     df = pd.DataFrame(results)
-    print(f"\nStation {station_id} best: {df.loc[df['MAE'].idxmin(), 'model']}")
+    best_idx = df['RMSE'].idxmin()
+    print(f"\nStation {station_id} best: {df.loc[best_idx, 'model']} (RMSE={df.loc[best_idx, 'RMSE']:.4f})")
 
 
 # ── Helper: Publish to Triton ─────────────────────────────────────────────────
@@ -596,19 +597,22 @@ def _compare_and_deploy(**context):
         if not os.path.exists(path):
             continue
         preds = _onnx_predict(path, X_3d if is_lstm else X_f)
-        mae   = evaluate_model(y_test, preds)["MAE"]
-        trained[key] = (name, mae, is_lstm)
+        metrics = evaluate_model(y_test, preds)
+        rmse = metrics["RMSE"]
+        mae = metrics["MAE"]
+        trained[key] = (name, rmse, mae, is_lstm)
 
     if not trained:
         raise RuntimeError("No trained models found — all tmp ONNX missing")
 
-    best_key           = min(trained, key=lambda k: trained[k][1])
-    best_name, new_mae, best_is_lstm = trained[best_key]
-    print(f"Best new model: {best_name}  MAE={new_mae:.4f}")
+    best_key = min(trained, key=lambda k: trained[k][1])  # Select by RMSE (index 1)
+    best_name, new_rmse, new_mae, best_is_lstm = trained[best_key]
+    print(f"Best new model: {best_name}  RMSE={new_rmse:.4f}  MAE={new_mae:.4f}")
 
     # Load production model for comparison
     models_dir = _models_dir(station_id)
     registry   = f"{models_dir}/active_model.json"
+    prod_rmse  = None
     prod_mae   = None
     old_info   = None
 
@@ -623,13 +627,15 @@ def _compare_and_deploy(**context):
                 print("  Prod model incompatible shape — treating as first deploy")
                 old_info = None
             else:
-                prod_mae = evaluate_model(y_test, preds_prod)["MAE"]
+                prod_metrics = evaluate_model(y_test, preds_prod)
+                prod_rmse = prod_metrics["RMSE"]
+                prod_mae = prod_metrics["MAE"]
 
-    prod_str = (f"MAE={prod_mae:.4f}  ({old_info['train_start']} → {old_info['train_end']})"
-                if prod_mae is not None else "N/A (first deploy)")
+    prod_str = (f"RMSE={prod_rmse:.4f}  MAE={prod_mae:.4f}  ({old_info['train_start']} → {old_info['train_end']})"
+                if prod_rmse is not None else "N/A (first deploy)")
     print(f"  Prod: {prod_str}")
 
-    if prod_mae is None or new_mae < prod_mae:
+    if prod_rmse is None or new_rmse < prod_rmse:
         onnx_filename = f"{best_key}_{train_start}_{train_end}.onnx"
         onnx_dest     = f"{models_dir}/onnx/{onnx_filename}"
         shutil.copy2(_tmp_onnx(station_id, best_key), onnx_dest)
@@ -650,7 +656,8 @@ def _compare_and_deploy(**context):
             json.dump(meta["feature_cols"], f)
 
         status = "DEPLOYED"
-        delta  = round(prod_mae - new_mae, 4) if prod_mae is not None else None
+        delta_rmse = round(prod_rmse - new_rmse, 4) if prod_rmse is not None else None
+        delta_mae = round(prod_mae - new_mae, 4) if prod_mae is not None else None
         print(f"  → DEPLOYED  {onnx_dest}")
 
         # Publish to Triton
@@ -665,8 +672,9 @@ def _compare_and_deploy(**context):
             print(f"  ⚠ Triton publish failed (model still deployed to models/): {e}")
     else:
         status = "NOT_DEPLOYED"
-        delta  = round(prod_mae - new_mae, 4)
-        print(f"  → NOT DEPLOYED  new {new_mae:.4f} >= prod {prod_mae:.4f}")
+        delta_rmse = round(prod_rmse - new_rmse, 4)
+        delta_mae = round(prod_mae - new_mae, 4)
+        print(f"  → NOT DEPLOYED  new RMSE {new_rmse:.4f} >= prod {prod_rmse:.4f}")
 
     # Clean up temp ONNX files
     for key in tmp_keys:
@@ -678,15 +686,18 @@ def _compare_and_deploy(**context):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     report_path = f"{RESULTS_DIR}/forecast_24h_results.csv"
     row = {
-        "station_id":  station_id,
-        "train_start": train_start,
-        "train_end":   train_end,
-        "best_model":  best_name,
-        "new_mae":     new_mae,
-        "prod_mae":    prod_mae,
-        "mae_delta":   delta,
-        "status":      status,
-        "run_date":    datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        "station_id":   station_id,
+        "train_start":  train_start,
+        "train_end":    train_end,
+        "best_model":   best_name,
+        "new_rmse":     new_rmse,
+        "prod_rmse":    prod_rmse,
+        "rmse_delta":   delta_rmse,
+        "new_mae":      new_mae,
+        "prod_mae":     prod_mae,
+        "mae_delta":    delta_mae,
+        "status":       status,
+        "run_date":     datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
     }
     exists = os.path.exists(report_path)
     pd.DataFrame([row]).to_csv(report_path, mode="a", header=not exists, index=False)

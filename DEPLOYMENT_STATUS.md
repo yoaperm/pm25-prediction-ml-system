@@ -87,7 +87,7 @@ The `dags/pm25_24h_training_dag.py` now automatically publishes to Triton when a
 **What happens on training**:
 1. Trains 5 models (Linear, Ridge, RF, XGBoost, LSTM)
 2. Compares best model with current production
-3. If better (lower MAE):
+3. If better (lower RMSE):
    - ✅ Saves to `models/station_{id}_24h/onnx/`
    - ✅ Updates `active_model.json`
    - ✅ **Publishes to Triton** (copies ONNX + creates config.pbtxt)

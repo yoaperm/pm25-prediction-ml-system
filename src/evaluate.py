@@ -39,8 +39,8 @@ def evaluate_model(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
 def print_metrics(model_name: str, metrics: dict):
     """Print evaluation metrics in a formatted style."""
     print(f"\n  {model_name} Results:")
+    print(f"    RMSE: {metrics['RMSE']:.4f}  (primary metric)")
     print(f"    MAE:  {metrics['MAE']:.4f}")
-    print(f"    RMSE: {metrics['RMSE']:.4f}")
     print(f"    R²:   {metrics['R2']:.4f}")
 
 
@@ -57,12 +57,12 @@ def compare_models(results_path: str = "results/experiment_results.csv"):
     print("\n" + "=" * 60)
     print("MODEL COMPARISON")
     print("=" * 60)
-    print(df[["model", "MAE", "RMSE", "R2"]].to_string(index=False))
+    print(df[["model", "RMSE", "MAE", "R2"]].to_string(index=False))
 
-    # Find best model by MAE
-    best_idx = df["MAE"].idxmin()
+    # Find best model by RMSE
+    best_idx = df["RMSE"].idxmin()
     best_model = df.loc[best_idx, "model"]
-    print(f"\nBest model (lowest MAE): {best_model} (MAE={df.loc[best_idx, 'MAE']:.4f})")
+    print(f"\nBest model (lowest RMSE): {best_model} (RMSE={df.loc[best_idx, 'RMSE']:.4f}, MAE={df.loc[best_idx, 'MAE']:.4f})")
 
     return df
 
