@@ -74,8 +74,8 @@ docker exec pm25-prediction-ml-system-airflow-scheduler-1 \
 ```
 
 **This will automatically**:
-- Check model performance daily (30-day MAE & PSI)
-- Retrain if MAE > 9.0 or PSI > 0.2
+- Check model performance daily (14-day rolling window: RMSE & PSI)
+- Retrain if RMSE > 13.0 or PSI > 0.2
 
 ### Monitor Training Progress
 

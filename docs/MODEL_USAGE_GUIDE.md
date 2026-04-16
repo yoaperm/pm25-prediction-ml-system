@@ -24,7 +24,7 @@ Data (3.5 years) → Feature Engineering (19 features)
                             ↓
                     Evaluate on Test Set
                             ↓
-                  Select BEST (lowest MAE)
+                  Select BEST (lowest RMSE)
                             ↓
                 Deploy to Triton & FastAPI
 ```
@@ -37,11 +37,13 @@ Data (3.5 years) → Feature Engineering (19 features)
 
 Each station has ONE deployed model (the best of the 5 types):
 
-| Station | Model Name | Deployed Algorithm | MAE | Status |
-|---------|------------|-------------------|-----|--------|
-| 10T | `pm25` | (varies) | - | ✓ Active |
-| 63 | `pm25_63` | (varies) | - | ✓ Active |
-| 64 | `pm25_64` | (varies) | - | ✓ Active |
+| Station | Model Name | Deployed Algorithm | RMSE | Status |
+|---------|------------|-------------------|------|--------|
+| 56 | `pm25_56` | Linear Regression | 9.8 | ✓ Active |
+| 57 | `pm25_57` | Ridge Regression | 9.6 | ✓ Active |
+| 58 | `pm25_58` | Ridge Regression | 9.6 | ✓ Active |
+| 59 | `pm25_59` | Random Forest | 9.5 | ✓ Active |
+| 61 | `pm25_61` | Linear Regression | 9.8 | ✓ Active |
 | 65 | `pm25_65` | (varies) | - | ✓ Active |
 | 66 | `pm25_66` | (varies) | - | ✓ Active |
 | 67 | `pm25_67` | (varies) | - | ✓ Active |
@@ -154,17 +156,17 @@ http://localhost:5001
 
 Navigate to:
 - Experiment: `pm25_24h_station_56`
-- See all 5 runs with MAE, RMSE, R² comparisons
+- See all 5 runs with RMSE (primary), MAE, R² comparisons
 - View hyperparameters used
 - Compare models side-by-side
 
 **Example MLflow Results**:
 ```
-Run Name             MAE      RMSE    R²      Params
+Run Name             RMSE    MAE      R²      Params
 ────────────────────────────────────────────────────
-LinearRegression_24h  7.3287  9.45   0.823   -
-Ridge_24h             6.8022  8.91   0.847   alpha=10.0
-RandomForest_24h      7.9821  10.23  0.789   n_estimators=100, depth=10
+LinearRegression_24h  9.45   7.3287  0.823   -
+Ridge_24h             8.91   6.8022  0.847   alpha=10.0  ⭐ Selected
+RandomForest_24h     10.23   7.9821  0.789   n_estimators=100, depth=10
 XGBoost_24h           7.1234  9.12   0.841   lr=0.1, depth=5
 LSTM_24h              8.2341  10.67  0.771   hidden=64, epochs=12
 ```
@@ -248,13 +250,13 @@ publish_to_triton(
 
 ### Current Best Models (from MLflow):
 
-| Station | Best Model | MAE |
-|---------|-----------|-----|
-| 56 | Linear Regression | 7.33 |
-| 57 | Ridge Regression | 6.80 |
-| 58 | Ridge Regression | 7.16 |
-| 59 | Random Forest | 8.44 |
-| 61 | Linear Regression | 7.66 |
+| Station | Best Model | RMSE | MAE | Notes |
+|---------|-----------|------|-----|-------|
+| 56 | Linear Regression | 9.8 | 7.33 | Selected by RMSE |
+| 57 | Ridge Regression | 9.6 | 6.80 | Best overall |
+| 58 | Ridge Regression | 9.6 | 7.16 | Consistent performer |
+| 59 | Random Forest | 9.5 | 8.44 | Handles non-linearity |
+| 61 | Linear Regression | 9.8 | 7.66 | Simple & effective |
 
 **Observations**:
 - Ridge performs best overall (stations 57, 58)

@@ -52,9 +52,9 @@ Complete technical documentation for the PM2.5 prediction ML pipeline.
                                   ↓
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    Model Selection & Deployment                      │
-│  • Select best model (lowest MAE)                                   │
+│  • Select best model (lowest RMSE)                                  │
 │  • Compare with production (if exists)                              │
-│  • Deploy if MAE improved                                           │
+│  • Deploy if RMSE improved                                          │
 │  • Export to ONNX                                                   │
 │  • Publish to Triton (automatic)                                    │
 └─────────────────────────────────────────────────────────────────────┘
@@ -69,9 +69,9 @@ Complete technical documentation for the PM2.5 prediction ML pipeline.
 ┌─────────────────────────────────────────────────────────────────────┐
 │                 Monitoring & Auto-Retraining                         │
 │  Daily checks (02:00 UTC):                                          │
-│  • Rolling 30-day MAE                                               │
+│  • Rolling 14-day RMSE (2 weekly cycles)                           │
 │  • PSI (Population Stability Index) for drift                       │
-│  • Triggers: MAE > 9.0 OR PSI > 0.2                                 │
+│  • Triggers: RMSE > 13.0 OR PSI > 0.2                               │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -590,9 +590,10 @@ dynamic_batching {{ }}
 ### 1. Performance Monitoring
 
 ```python
-def calculate_rolling_mae(station_id, window_days=30):
+def calculate_rolling_rmse(station_id, window_days=14):
     """
-    Calculate MAE over last 30 days of predictions vs actuals.
+    Calculate RMSE over last 14 days of predictions vs actuals.
+    14 days = 2 weekly cycles for balanced weekday/weekend coverage.
     """
     query = """
     SELECT 
@@ -603,13 +604,13 @@ def calculate_rolling_mae(station_id, window_days=30):
         ON p.station_id = a.station_id 
         AND p.prediction_date = a.actual_date
     WHERE p.station_id = %s
-        AND p.created_at >= NOW() - INTERVAL '30 days'
+        AND p.created_at >= NOW() - INTERVAL '14 days'
     """
     
     df = pd.read_sql(query, conn, params=[station_id])
-    mae = mean_absolute_error(df['actual_pm25'], df['predicted_pm25'])
+    rmse = np.sqrt(mean_squared_error(df['actual_pm25'], df['predicted_pm25']))
     
-    return mae
+    return rmse
 ```
 
 ### 2. Feature Drift Detection (PSI)
@@ -641,15 +642,15 @@ def calculate_psi(expected, actual, bins=10):
 
 ```python
 def should_retrain(station_id):
-    mae = calculate_rolling_mae(station_id)
+    rmse = calculate_rolling_rmse(station_id)
     psi = calculate_feature_drift_psi(station_id)
     
     # Thresholds
-    MAE_THRESHOLD = 9.0  # µg/m³
+    RMSE_THRESHOLD = 13.0  # µg/m³
     PSI_THRESHOLD = 0.2
     
-    if mae > MAE_THRESHOLD:
-        return True, f"MAE degraded: {mae:.2f} > {MAE_THRESHOLD}"
+    if rmse > RMSE_THRESHOLD:
+        return True, f"RMSE degraded: {rmse:.2f} > {RMSE_THRESHOLD}"
     
     if psi > PSI_THRESHOLD:
         return True, f"Feature drift detected: PSI={psi:.3f} > {PSI_THRESHOLD}"
@@ -663,9 +664,11 @@ def should_retrain(station_id):
 
 ### Trigger Conditions
 
-1. **Performance Degradation**: Rolling 30-day MAE > 9.0 µg/m³
+1. **Performance Degradation**: Rolling 14-day RMSE > 13.0 µg/m³
 2. **Feature Drift**: PSI > 0.2 on any feature
 3. **Manual Trigger**: Via Airflow UI or API
+
+**Why 14 days?** Captures 2 complete weekly cycles (weekday + weekend patterns) while maintaining fast detection of model degradation.
 
 ### Retraining Flow
 
@@ -696,12 +699,12 @@ Log to monitoring_24h_results.csv
 **Location**: `results/monitoring_24h_results.csv`
 
 ```csv
-station_id,check_date,rolling_mae,psi,status,action
-56,2026-04-16,7.2,0.08,OK,none
-57,2026-04-16,8.9,0.15,OK,none
-58,2026-04-16,9.5,0.12,DEGRADED,retrain_triggered
-59,2026-04-16,6.8,0.25,DRIFT,retrain_triggered
-61,2026-04-16,7.5,0.09,OK,none
+station_id,check_date,rolling_rmse,rolling_mae,psi,status,action
+56,2026-04-16,9.8,7.2,0.08,OK,none
+57,2026-04-16,11.5,8.9,0.15,OK,none
+58,2026-04-16,13.8,9.5,0.12,DEGRADED,retrain_triggered
+59,2026-04-16,9.2,6.8,0.25,DRIFT,retrain_triggered
+61,2026-04-16,10.1,7.5,0.09,OK,none
 ```
 
 ---

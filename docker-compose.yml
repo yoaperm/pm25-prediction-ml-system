@@ -160,7 +160,7 @@ services:
       AIRFLOW_URL: http://airflow-webserver:8080
       AIRFLOW_USER: admin
       AIRFLOW_PASSWORD: admin
-      MAE_THRESHOLD: "6.0"
+      RMSE_THRESHOLD: "9.0"
       API_KEY: ${API_KEY:-foonalert-secret-key}
       INFERENCE_BACKEND: triton
       TRITON_URL: triton:8000
