@@ -4,10 +4,6 @@ version: "3.8"
 # Shared Airflow configuration (YAML anchor)
 # -----------------------------------------------------------------------
 x-airflow-common: &airflow-common
-  build:
-    context: .
-    args:
-      INSTALL_ML_DEPS: ${INSTALL_ML_DEPS:-true}
   environment:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -85,6 +81,10 @@ services:
   # --- Airflow DB init (runs once) ---
   airflow-init:
     <<: *airflow-common
+    build:
+      context: .
+      args:
+        INSTALL_ML_DEPS: "false"
     command: >-
       bash -c "airflow db migrate &&
       airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin"
@@ -96,6 +96,10 @@ services:
   # --- Airflow webserver ---
   airflow-webserver:
     <<: *airflow-common
+    build:
+      context: .
+      args:
+        INSTALL_ML_DEPS: "false"
     command: airflow webserver
     ports:
       - "8080:8080"
@@ -107,6 +111,10 @@ services:
   # --- Airflow scheduler ---
   airflow-scheduler:
     <<: *airflow-common
+    build:
+      context: .
+      args:
+        INSTALL_ML_DEPS: "true"
     command: airflow scheduler
     depends_on:
       - airflow-init

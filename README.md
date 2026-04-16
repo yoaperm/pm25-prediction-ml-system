@@ -17,13 +17,14 @@ docker compose up -d
 
 Wait ~60 seconds for all services to initialize.
 
-If you only want to test the hourly ingest DAG and skip the heavy ML/training packages in the Airflow image:
+To keep the Airflow footprint smaller without refactoring DAG logic, this repo builds two Airflow image variants by default:
 
 ```bash
-INSTALL_ML_DEPS=false docker compose up --build -d postgres airflow-init airflow-webserver airflow-scheduler
+docker compose build airflow-webserver airflow-init airflow-scheduler
+docker compose up -d postgres airflow-init airflow-webserver airflow-scheduler
 ```
 
-That lean mode is enough for `pm25_hourly_ingest`, but the training DAG will not work until you rebuild with `INSTALL_ML_DEPS=true`.
+`airflow-webserver` and `airflow-init` use a lean image without `requirements-ml.txt`, while `airflow-scheduler` keeps the full ML stack for training and inference DAG tasks.
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
