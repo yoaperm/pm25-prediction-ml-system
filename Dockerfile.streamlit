@@ -6,7 +6,8 @@ RUN pip install --no-cache-dir \
     streamlit>=1.30.0 \
     httpx>=0.27.0 \
     pandas>=2.0.0 \
-    plotly>=5.18.0
+    plotly>=5.18.0 \
+    psycopg2-binary>=2.9.0
 
 COPY streamlit_app.py /app/streamlit_app.py
 COPY .streamlit /app/.streamlit

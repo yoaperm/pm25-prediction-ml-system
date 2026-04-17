@@ -61,7 +61,299 @@ def api_headers():
 
 # ── Pages ─────────────────────────────────────────────────────────────────────
 def page_predict():
+    import importlib
+    from urllib.parse import urlparse
+
+    station_ids = [56, 57, 58, 59, 61]
+    db_candidates = [
+        os.environ.get("PM25_DB_URL"),
+        "postgresql://admin:admin@43.209.207.187:5432/pm25",
+        "postgresql://admin:admin@43.209.207.187:5432/postgres",
+    ]
+    db_candidates = [candidate for candidate in db_candidates if candidate]
+
+    psycopg2 = None
+    try:
+        psycopg2 = importlib.import_module("psycopg2")
+    except ModuleNotFoundError:
+        psycopg2 = None
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _load_station_options():
+        last_error = None
+        station_map = {sid: f"Station {sid}" for sid in station_ids}
+
+        station_query = """
+            SELECT
+                station_id,
+                COALESCE(NULLIF(MAX(station_name), ''), 'Station ' || station_id::text) AS station_name
+            FROM pm25_raw_hourly
+            WHERE station_id = ANY(%s)
+            GROUP BY station_id
+            ORDER BY station_id
+        """
+
+        for db_url in db_candidates:
+            try:
+                with _connect_postgres(db_url) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(station_query, (station_ids,))
+                        rows = cur.fetchall()
+                for station_id, station_name in rows:
+                    station_map[int(station_id)] = station_name
+                return db_url, station_map, None
+            except Exception as exc:
+                last_error = exc
+
+        return None, station_map, last_error
+
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _load_station_series(db_url: str, station_id: int):
+        actual_query = """
+            SELECT
+                DATE(timestamp AT TIME ZONE 'Asia/Bangkok') AS reading_date,
+                ROUND(AVG(pm25)::numeric, 2) AS actual_pm25
+            FROM pm25_raw_hourly
+            WHERE station_id = %(station_id)s
+              AND pm25 IS NOT NULL
+            GROUP BY 1
+            ORDER BY 1
+        """
+        predicted_query = """
+            SELECT
+                prediction_date,
+                predicted_pm25
+            FROM pm25_api_daily_predictions
+            WHERE source_station_id = %(station_id)s
+            ORDER BY prediction_date
+        """
+
+        with _connect_postgres(db_url) as conn:
+            actual_df = pd.read_sql(actual_query, conn, params={"station_id": station_id})
+            predicted_df = pd.read_sql(predicted_query, conn, params={"station_id": station_id})
+
+        if not actual_df.empty:
+            actual_df["reading_date"] = pd.to_datetime(actual_df["reading_date"])
+            actual_df = actual_df.rename(columns={"reading_date": "date"})
+
+        if not predicted_df.empty:
+            predicted_df["prediction_date"] = pd.to_datetime(predicted_df["prediction_date"])
+            predicted_df = predicted_df.rename(columns={"prediction_date": "date"})
+
+        return actual_df, predicted_df
+
+    def _connect_postgres(db_url: str):
+        if psycopg2 is None:
+            raise RuntimeError(
+                "PostgreSQL driver is not installed. Please install `psycopg2-binary` "
+                "or add a supported PostgreSQL client to this Streamlit environment."
+            )
+        parsed = urlparse(db_url)
+        return psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            dbname=(parsed.path or "").lstrip("/"),
+            user=parsed.username,
+            password=parsed.password,
+        )
+
+    def _pm25_level_color(value):
+        if pd.isna(value):
+            return "#9E9E9E"
+        if value <= 15:
+            return "#2E8B57"
+        if value <= 25:
+            return "#D4A017"
+        if value <= 37.5:
+            return "#FF8C42"
+        if value <= 75:
+            return "#D62828"
+        return "#7B2CBF"
+
     st.header("🌫️ PM2.5 Next-Day Prediction")
+    st.markdown("เลือกสถานีเพื่อดูกราฟ Actual และ Predicted จาก PostgreSQL")
+
+    if psycopg2 is None:
+        st.warning(
+            "ยังไม่สามารถโหลดกราฟจาก PostgreSQL ได้ เพราะ environment นี้ไม่มี `psycopg2-binary` "
+            "หรือ PostgreSQL driver อื่น ๆ"
+        )
+
+    db_url, station_map, db_error = _load_station_options()
+    station_options = [
+        {"station_id": sid, "label": f"{sid} [{station_map.get(sid, f'Station {sid}')}]"}
+        for sid in station_ids
+    ]
+
+    selected_station = st.selectbox(
+        "Station",
+        station_options,
+        index=0,
+        format_func=lambda option: option["label"],
+    )
+    selected_station_id = selected_station["station_id"]
+    selected_station_name = station_map.get(selected_station_id, f"Station {selected_station_id}")
+
+    if psycopg2 is None:
+        db_url = None
+        db_error = RuntimeError("missing_postgres_driver")
+
+    if not db_url:
+        if psycopg2 is not None:
+            st.error(
+                "ไม่สามารถเชื่อมต่อ PostgreSQL ได้จากหน้า Predict "
+                f"({type(db_error).__name__}: {db_error})"
+            )
+        else:
+            st.info("ข้ามส่วนกราฟจาก PostgreSQL ชั่วคราว และยังใช้งานการทำนายแบบเดิมด้านล่างได้")
+    else:
+        try:
+            actual_df, predicted_df = _load_station_series(db_url, selected_station_id)
+        except Exception as exc:
+            st.error(f"โหลดข้อมูลจาก PostgreSQL ไม่สำเร็จ: {type(exc).__name__}: {exc}")
+            actual_df = pd.DataFrame()
+            predicted_df = pd.DataFrame()
+
+        if not actual_df.empty or not predicted_df.empty:
+            latest_actual_date = None
+            if not actual_df.empty:
+                latest_actual_date = actual_df["date"].max().normalize()
+            latest_predicted_date = None
+            if not predicted_df.empty:
+                latest_predicted_date = predicted_df["date"].max().normalize()
+
+            available_dates = []
+            if not actual_df.empty:
+                available_dates.extend(actual_df["date"].dropna().tolist())
+            if not predicted_df.empty:
+                available_dates.extend(predicted_df["date"].dropna().tolist())
+
+            min_available_date = None
+            max_allowed_date = None
+            if available_dates:
+                min_available_date = pd.Timestamp(min(available_dates)).normalize()
+                max_available_date = pd.Timestamp(max(available_dates)).normalize()
+                if latest_actual_date is not None:
+                    max_allowed_date = max(latest_actual_date + pd.Timedelta(days=1), max_available_date)
+                else:
+                    max_allowed_date = max_available_date
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Station ID", selected_station_id)
+            with col2:
+                st.metric("Station Name", selected_station_name)
+            with col3:
+                st.metric(
+                    "Latest Actual Date",
+                    latest_actual_date.strftime("%Y-%m-%d") if latest_actual_date is not None else "-",
+                )
+
+            selected_display_date = None
+            if latest_actual_date is not None:
+                selected_display_date = pd.Timestamp(
+                    st.date_input(
+                        "Display date",
+                        value=latest_actual_date.date(),
+                        min_value=min_available_date.date() if min_available_date is not None else None,
+                        max_value=max_allowed_date.date() if max_allowed_date is not None else None,
+                    )
+                ).normalize()
+
+            fig = go.Figure()
+
+            if not actual_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=actual_df["date"],
+                        y=actual_df["actual_pm25"],
+                        mode="lines+markers",
+                        name="Actual Data",
+                        line=dict(color="#2E8B57", width=3),
+                        marker=dict(
+                            size=9,
+                            color=[_pm25_level_color(value) for value in actual_df["actual_pm25"]],
+                            line=dict(color="#FFFFFF", width=1),
+                        ),
+                        hovertemplate="Date=%{x|%Y-%m-%d}<br>Actual=%{y:.2f} µg/m³<extra></extra>",
+                    )
+                )
+
+            if not predicted_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=predicted_df["date"],
+                        y=predicted_df["predicted_pm25"],
+                        mode="lines+markers",
+                        name="Predicted Data",
+                        line=dict(color="#4A4A4A", width=3, dash="dash"),
+                        marker=dict(
+                            size=9,
+                            color=[_pm25_level_color(value) for value in predicted_df["predicted_pm25"]],
+                            line=dict(color="#FFFFFF", width=1),
+                        ),
+                        hovertemplate="Date=%{x|%Y-%m-%d}<br>Predicted=%{y:.2f} µg/m³<extra></extra>",
+                    )
+                )
+
+            xaxis_range = None
+            if selected_display_date is not None:
+                if selected_display_date == latest_actual_date:
+                    range_start = selected_display_date - pd.Timedelta(days=7)
+                    range_end = selected_display_date + pd.Timedelta(days=1)
+                else:
+                    range_start = selected_display_date - pd.Timedelta(days=7)
+                    range_end = selected_display_date + pd.Timedelta(days=7)
+
+                if min_available_date is not None:
+                    range_start = max(range_start, min_available_date)
+                if max_allowed_date is not None:
+                    range_end = min(range_end, max_allowed_date)
+
+                xaxis_range = [range_start, range_end]
+
+            fig.update_layout(
+                title=f"PM2.5 Actual vs Predicted - Station {selected_station_id} [{selected_station_name}]",
+                xaxis_title="Date",
+                yaxis_title="PM2.5 (µg/m³)",
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                xaxis=dict(
+                    type="date",
+                    range=xaxis_range,
+                    tickformat="%Y-%m-%d",
+                    dtick="D1",
+                ),
+                height=520,
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            latest_pred = pd.DataFrame()
+            if not predicted_df.empty and selected_display_date is not None:
+                if selected_display_date == latest_actual_date:
+                    compare_start = selected_display_date - pd.Timedelta(days=7)
+                    compare_end = selected_display_date + pd.Timedelta(days=1)
+                else:
+                    compare_start = selected_display_date - pd.Timedelta(days=7)
+                    compare_end = selected_display_date + pd.Timedelta(days=7)
+
+                if min_available_date is not None:
+                    compare_start = max(compare_start, min_available_date)
+                if max_allowed_date is not None:
+                    compare_end = min(compare_end, max_allowed_date)
+
+                latest_pred = predicted_df[
+                    (predicted_df["date"] >= compare_start) & (predicted_df["date"] <= compare_end)
+                ].copy()
+
+            if not latest_pred.empty:
+                latest_pred["date"] = latest_pred["date"].dt.strftime("%Y-%m-%d")
+                latest_pred = latest_pred.rename(columns={"date": "prediction_date"})
+                st.markdown("##### Predicted values around latest actual date")
+                st.dataframe(latest_pred, use_container_width=True, hide_index=True)
+
+    st.divider()
     st.markdown(
         "Enter at least **15 consecutive daily PM2.5 readings** (oldest first) "
         "to predict the next day's PM2.5 concentration."
@@ -94,7 +386,7 @@ def page_predict():
                 )
                 history.append({"date": str(d), "pm25": val})
 
-    else:  # Upload CSV
+    else:
         st.markdown("Upload a CSV with columns `date` and `pm25` (at least 15 rows).")
         uploaded = st.file_uploader("Choose CSV", type=["csv"])
         if uploaded:
