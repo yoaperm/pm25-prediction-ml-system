@@ -40,7 +40,7 @@ FORECAST_HOUR     = 24
 ROLLING_DAYS      = 14      # evaluation window (2 weekly cycles)
 MIN_PAIRS         = 168     # minimum hours needed (7 days)
 RMSE_THRESHOLD    = 13.0    # µg/m³  — retrain if exceeded
-PSI_THRESHOLD     = 0.2     # retrain if exceeded
+PSI_THRESHOLD     = 1     # retrain if exceeded
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
