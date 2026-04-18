@@ -11,6 +11,7 @@ Pages:
 
 import os
 import datetime
+from urllib.parse import quote_plus
 
 import httpx
 import pandas as pd
@@ -65,12 +66,38 @@ def page_predict():
     from urllib.parse import urlparse
 
     station_ids = [56, 57, 58, 59, 61]
-    db_candidates = [
+
+    def _build_db_url_from_components():
+        db_host = os.environ.get("PM25_DB_HOST")
+        if not db_host:
+            return None
+
+        db_port = os.environ.get("PM25_DB_PORT", "5432")
+        db_name = os.environ.get("PM25_DB_NAME", "pm25")
+        db_user = os.environ.get("PM25_DB_USER", "postgres")
+        db_password = os.environ.get("PM25_DB_PASSWORD")
+
+        if db_password is None:
+            return None
+
+        safe_user = quote_plus(db_user)
+        safe_password = quote_plus(db_password)
+        return f"postgresql://{safe_user}:{safe_password}@{db_host}:{db_port}/{db_name}"
+
+    db_candidates = []
+    seen_db_urls = set()
+
+    for candidate in (
         os.environ.get("PM25_DB_URL"),
-        "postgresql://admin:admin@postgres:5432/pm25",
-        "postgresql://admin:admin@postgres:5432/postgres",
-    ]
-    db_candidates = [candidate for candidate in db_candidates if candidate]
+        os.environ.get("STREAMLIT_PM25_DB_URL"),
+        os.environ.get("DATABASE_URL"),
+        _build_db_url_from_components(),
+        "postgresql://postgres:postgres@postgres:5432/pm25",
+        "postgresql://postgres:postgres@postgres:5432/postgres",
+    ):
+        if candidate and candidate not in seen_db_urls:
+            db_candidates.append(candidate)
+            seen_db_urls.add(candidate)
 
     psycopg2 = None
     try:
@@ -203,6 +230,10 @@ def page_predict():
             st.error(
                 "ไม่สามารถเชื่อมต่อ PostgreSQL ได้จากหน้า Predict "
                 f"({type(db_error).__name__}: {db_error})"
+            )
+            st.caption(
+                "ตั้งค่า PM25_DB_URL หรือ STREAMLIT_PM25_DB_URL ให้เป็นของเครื่องใหม่ เช่น "
+                "postgresql://<user>:<password>@<db-host>:5432/pm25"
             )
         else:
             st.info("ข้ามส่วนกราฟจาก PostgreSQL ชั่วคราว และยังใช้งานการทำนายแบบเดิมด้านล่างได้")

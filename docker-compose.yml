@@ -183,6 +183,7 @@ services:
       API_URL: http://api:8000
       API_KEY: ${API_KEY:-foonalert-secret-key}
       RESULTS_DIR: /app/results
+      PM25_DB_URL: ${PM25_DB_URL:-postgresql://postgres:postgres@postgres:5432/pm25}
     depends_on:
       - api
     restart: unless-stopped
