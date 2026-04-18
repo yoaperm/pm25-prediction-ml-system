@@ -67,8 +67,8 @@ def page_predict():
     station_ids = [56, 57, 58, 59, 61]
     db_candidates = [
         os.environ.get("PM25_DB_URL"),
-        "postgresql://admin:admin@43.209.207.187:5432/pm25",
-        "postgresql://admin:admin@43.209.207.187:5432/postgres",
+        "postgresql://admin:admin@postgres:5432/pm25",
+        "postgresql://admin:admin@postgres:5432/postgres",
     ]
     db_candidates = [candidate for candidate in db_candidates if candidate]
 
