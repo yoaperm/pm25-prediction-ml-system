@@ -7,7 +7,7 @@
 set -e
 
 EC2_USER="ubuntu"
-EC2_HOST="43.209.207.187"
+EC2_HOST="43.210.161.101"
 EC2_KEY="$HOME/Downloads/boss-admin-keypair.pem"
 EC2_PROJECT="~/pm25-prediction-ml-system"
 LOCAL_TRITON="$(dirname "$0")/../triton_model_repo"
