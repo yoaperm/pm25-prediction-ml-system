@@ -11,6 +11,7 @@ Pages:
 
 import os
 import datetime
+import re
 from urllib.parse import quote_plus
 
 import httpx
@@ -136,6 +137,20 @@ def page_predict():
 
     @st.cache_data(ttl=300, show_spinner=False)
     def _load_station_series(db_url: str, station_id: int):
+        def _quote_table_path(table_name: str):
+            if not table_name:
+                return None
+            parts = table_name.split(".")
+            if len(parts) > 2:
+                return None
+
+            quoted_parts = []
+            for part in parts:
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", part):
+                    return None
+                quoted_parts.append(f'"{part}"')
+            return ".".join(quoted_parts)
+
         actual_query = """
             SELECT
                 DATE(timestamp AT TIME ZONE 'Asia/Bangkok') AS reading_date,
@@ -146,18 +161,42 @@ def page_predict():
             GROUP BY 1
             ORDER BY 1
         """
-        predicted_query = """
-            SELECT
-                prediction_date,
-                predicted_pm25
-            FROM pm25_api_daily_predictions
-            WHERE source_station_id = %(station_id)s
-            ORDER BY prediction_date
-        """
+        predictions_table = os.environ.get("PM25_PREDICTIONS_TABLE", "pm25_api_daily_predictions")
+        quoted_predictions_table = _quote_table_path(predictions_table)
+        prediction_note = None
 
         with _connect_postgres(db_url) as conn:
             actual_df = pd.read_sql(actual_query, conn, params={"station_id": station_id})
-            predicted_df = pd.read_sql(predicted_query, conn, params={"station_id": station_id})
+            predicted_df = pd.DataFrame(columns=["prediction_date", "predicted_pm25"])
+
+            if quoted_predictions_table:
+                predicted_query = f"""
+                    SELECT
+                        prediction_date,
+                        predicted_pm25
+                    FROM {quoted_predictions_table}
+                    WHERE source_station_id = %(station_id)s
+                    ORDER BY prediction_date
+                """
+                try:
+                    predicted_df = pd.read_sql(predicted_query, conn, params={"station_id": station_id})
+                except Exception as exc:
+                    is_missing_table = (
+                        getattr(exc, "pgcode", None) == "42P01"
+                        or type(exc).__name__ == "UndefinedTable"
+                        or "relation" in str(exc).lower() and "does not exist" in str(exc).lower()
+                    )
+                    if is_missing_table:
+                        prediction_note = (
+                            "ตาราง prediction ใน PostgreSQL ยังไม่ถูกสร้าง "
+                            f"({predictions_table}) จึงแสดงเฉพาะข้อมูล Actual ชั่วคราว"
+                        )
+                    else:
+                        raise
+            else:
+                prediction_note = (
+                    "ค่า PM25_PREDICTIONS_TABLE ไม่ถูกต้อง จึงแสดงเฉพาะข้อมูล Actual ชั่วคราว"
+                )
 
         if not actual_df.empty:
             actual_df["reading_date"] = pd.to_datetime(actual_df["reading_date"])
@@ -167,7 +206,7 @@ def page_predict():
             predicted_df["prediction_date"] = pd.to_datetime(predicted_df["prediction_date"])
             predicted_df = predicted_df.rename(columns={"prediction_date": "date"})
 
-        return actual_df, predicted_df
+        return actual_df, predicted_df, prediction_note
 
     def _connect_postgres(db_url: str):
         if psycopg2 is None:
@@ -239,11 +278,15 @@ def page_predict():
             st.info("ข้ามส่วนกราฟจาก PostgreSQL ชั่วคราว และยังใช้งานการทำนายแบบเดิมด้านล่างได้")
     else:
         try:
-            actual_df, predicted_df = _load_station_series(db_url, selected_station_id)
+            actual_df, predicted_df, prediction_note = _load_station_series(db_url, selected_station_id)
         except Exception as exc:
             st.error(f"โหลดข้อมูลจาก PostgreSQL ไม่สำเร็จ: {type(exc).__name__}: {exc}")
             actual_df = pd.DataFrame()
             predicted_df = pd.DataFrame()
+            prediction_note = None
+
+        if prediction_note:
+            st.info(prediction_note)
 
         if not actual_df.empty or not predicted_df.empty:
             latest_actual_date = None
