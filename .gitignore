@@ -26,8 +26,6 @@ env/
 .DS_Store
 Thumbs.db
 
-resources/
-
 # Agent workspace: local development only (design notes, task tracking)
 .agent/*
 .github/agents/*
