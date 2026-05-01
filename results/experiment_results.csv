@@ -1,0 +1,7 @@
+model,MAE,RMSE,R2,best_params
+Linear Regression (Baseline),5.1348,6.7493,0.7726,
+Ridge Regression,4.8286,6.5294,0.7871,{'alpha': 100.0}
+Random Forest,4.5504,6.5172,0.7879,"{'max_depth': 5, 'max_features': 0.5, 'min_samples_leaf': 4, 'min_samples_split': 2, 'n_estimators': 100}"
+XGBoost,4.8821,7.1675,0.7435,"{'colsample_bytree': 0.8, 'learning_rate': 0.05, 'max_depth': 3, 'n_estimators': 100, 'subsample': 1.0}"
+LSTM,6.6987,9.1623,0.5809,"{'optimizer__lr': 0.001, 'module__units': 64, 'module__dropout': 0.1, 'max_epochs': 50, 'batch_size': 16}"
+SARIMA,4.5361,6.4766,0.7906,"{'order': '(1, 1, 2)', 'seasonal_order': '(0, 0, 0, 7)'}"
