@@ -28,7 +28,8 @@ def fit_predict_one_step(order: tuple, seasonal_order: tuple, history) -> float:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         fit = SARIMAX(list(history), order=order, seasonal_order=seasonal_order).fit(disp=False)
-    return float(fit.forecast(steps=1).iloc[0])
+    forecast = fit.forecast(steps=1)
+    return float(forecast.iloc[0] if hasattr(forecast, "iloc") else forecast[0])
 
 
 def predict_sarima_rolling(model, y_train: np.ndarray, y_test: np.ndarray) -> np.ndarray:

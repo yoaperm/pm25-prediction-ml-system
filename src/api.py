@@ -90,11 +90,15 @@ else:
             os.path.join(ONNX_DIR, f"{MODEL_NAME}.onnx"),
             providers=["CPUExecutionProvider"],
         )
-    session      = _load_onnx_session()
-    _input_name  = session.get_inputs()[0].name
-    _output_name = session.get_outputs()[0].name
+    if IS_SARIMA:
+        session, _input_name, _output_name = None, None, None
+        print("Inference backend: sarima (refit-at-inference)")
+    else:
+        session      = _load_onnx_session()
+        _input_name  = session.get_inputs()[0].name
+        _output_name = session.get_outputs()[0].name
+        print(f"Inference backend: onnxruntime  model={_active_info.get('onnx_file', MODEL_NAME)}")
     _triton_client = None
-    print(f"Inference backend: onnxruntime  model={_active_info.get('onnx_file', MODEL_NAME)}")
 
 with open(FEATURE_COLS_PATH) as f:
     FEATURE_COLS: List[str] = json.load(f)
