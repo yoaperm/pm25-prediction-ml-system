@@ -22,6 +22,7 @@ from preprocessing import preprocess_pipeline
 from feature_engineering import build_features, get_feature_columns
 from evaluate import evaluate_model, print_metrics
 from lstm_model import train_lstm_with_tuning
+from sarima_model import train_sarima_with_tuning, predict_sarima_rolling
 
 
 def get_model(name: str, params: dict = None):
@@ -291,6 +292,21 @@ def train_all_models(config: dict):
         mlflow.log_metrics(m)
         trained["lstm"] = ("LSTM", lstm_model, m, True)
         results.append({"model": "LSTM", **m, "best_params": str(lstm_best)})
+
+    # 6. SARIMA — statistical time-series benchmark
+    # Uses only the pm25 endog series, not the feature matrix.
+    # Not added to `trained`: no ONNX export path exists for statsmodels,
+    # so SARIMA is excluded from the deployment competition.
+    sarima_cfg = config.get("models", {}).get("sarima", {})
+    seasonal_period = sarima_cfg.get("seasonal_period", 7)
+    with mlflow.start_run(run_name="SARIMA"):
+        sarima_model, sarima_best = train_sarima_with_tuning(y_train, seasonal_period)
+        y_pred_sarima = predict_sarima_rolling(sarima_model, y_train, y_test)
+        m = evaluate_model(y_test, y_pred_sarima)
+        print_metrics("SARIMA", m)
+        mlflow.log_params(sarima_best)
+        mlflow.log_metrics(m)
+        results.append({"model": "SARIMA", **m, "best_params": str(sarima_best)})
 
     # ---- Save experiment results ----
     results_df = pd.DataFrame(results)
