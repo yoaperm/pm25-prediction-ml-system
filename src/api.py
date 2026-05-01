@@ -64,10 +64,8 @@ if os.path.exists(ACTIVE_MODEL_JSON):
 # New schema uses explicit "backend" / "input_shape" fields;
 # legacy fields "is_sarima" / "is_lstm" are accepted as fallbacks
 # so existing DAG-written active_model.json files keep working.
-BACKEND     = _active_info.get("backend",
-                  "sarima" if _active_info.get("is_sarima") else "onnx")
-INPUT_SHAPE = _active_info.get("input_shape",
-                  "3d" if _active_info.get("is_lstm") else "2d")
+BACKEND     = _active_info.get("backend", "onnx")
+INPUT_SHAPE = _active_info.get("input_shape", "2d")
 
 _sarima_order: dict = {}
 if BACKEND == "sarima":

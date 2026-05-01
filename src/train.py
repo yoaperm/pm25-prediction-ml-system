@@ -113,7 +113,7 @@ def _load_active_model(models_dir: str, X_test, y_test):
     with open(registry_path) as f:
         info = json.load(f)
 
-    if info.get("backend") == "sarima" or info.get("is_sarima"):
+    if info.get("backend") == "sarima":
         return None, None, None
 
     onnx_path = os.path.join(models_dir, "onnx", info["onnx_file"])
@@ -124,7 +124,7 @@ def _load_active_model(models_dir: str, X_test, y_test):
     input_name  = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
 
-    if info.get("input_shape") == "3d" or info.get("is_lstm"):
+    if info.get("input_shape") == "3d":
         X_in = X_test.reshape(X_test.shape[0], 1, X_test.shape[1]).astype(np.float32)
     else:
         X_in = X_test.astype(np.float32)
@@ -164,7 +164,6 @@ def _save_model(model, key: str, train_start: str, train_end: str,
         "train_end":   train_end,
         "backend":     "onnx",
         "input_shape": "3d" if is_lstm else "2d",
-        "is_lstm":     is_lstm,   # kept for DAG backward compat
     }
 
     # Publish to Triton model repository (project_root/triton_model_repo/)
@@ -189,8 +188,6 @@ def _save_sarima_model(order, seasonal_order, train_start: str, train_end: str, 
         "model_key":      "sarima",
         "backend":        "sarima",
         "input_shape":    "2d",
-        "is_sarima":      True,    # kept for DAG backward compat
-        "is_lstm":        False,   # kept for DAG backward compat
         "onnx_file":      None,
         "train_start":    train_start,
         "train_end":      train_end,

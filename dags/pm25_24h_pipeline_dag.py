@@ -219,7 +219,7 @@ def _check_station_health(station_id, **context):
     in_name  = sess.get_inputs()[0].name
     out_name = sess.get_outputs()[0].name
 
-    if model_info.get("is_lstm"):
+    if model_info.get("input_shape") == "3d":
         n = model_info.get("n_features", X.shape[1])
         X_in = X.reshape(-1, 1, n)
     else:

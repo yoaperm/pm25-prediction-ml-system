@@ -621,7 +621,7 @@ def _compare_and_deploy(**context):
             old_info = json.load(f)
         onnx_prod = f"{models_dir}/onnx/{old_info['onnx_file']}"
         if os.path.exists(onnx_prod):
-            X_in       = X_3d if old_info.get("is_lstm") else X_f
+            X_in       = X_3d if old_info.get("input_shape") == "3d" else X_f
             preds_prod = _onnx_predict(onnx_prod, X_in)
             if preds_prod.shape[0] != y_test.shape[0]:
                 print("  Prod model incompatible shape — treating as first deploy")
@@ -646,7 +646,8 @@ def _compare_and_deploy(**context):
             "station_id":    station_id,
             "train_start":   train_start,
             "train_end":     train_end,
-            "is_lstm":       best_is_lstm,
+            "backend":       "onnx",
+            "input_shape":   "3d" if best_is_lstm else "2d",
             "forecast_hour": FORECAST_HOUR,
             "n_features":    n,
         }
