@@ -60,11 +60,17 @@ if os.path.exists(ACTIVE_MODEL_JSON):
     with open(ACTIVE_MODEL_JSON) as f:
         _active_info = json.load(f)
 
-IS_LSTM   = _active_info.get("is_lstm", False)
-IS_SARIMA = _active_info.get("is_sarima", False)
+# Resolve serving backend and input shape from active_model.json.
+# New schema uses explicit "backend" / "input_shape" fields;
+# legacy fields "is_sarima" / "is_lstm" are accepted as fallbacks
+# so existing DAG-written active_model.json files keep working.
+BACKEND     = _active_info.get("backend",
+                  "sarima" if _active_info.get("is_sarima") else "onnx")
+INPUT_SHAPE = _active_info.get("input_shape",
+                  "3d" if _active_info.get("is_lstm") else "2d")
 
 _sarima_order: dict = {}
-if IS_SARIMA:
+if BACKEND == "sarima":
     _sarima_order_path = os.path.join(MODELS_DIR, "sarima_order.json")
     if os.path.exists(_sarima_order_path):
         with open(_sarima_order_path) as f:
@@ -80,7 +86,6 @@ if INFERENCE_BACKEND == "triton":
     session         = None
     print(f"Inference backend: Triton  url={TRITON_URL}  model={TRITON_MODEL_NAME}")
 else:
-    # Local ONNX Runtime (default)
     def _load_onnx_session():
         if _active_info.get("onnx_file"):
             path = os.path.join(ONNX_DIR, _active_info["onnx_file"])
@@ -90,7 +95,7 @@ else:
             os.path.join(ONNX_DIR, f"{MODEL_NAME}.onnx"),
             providers=["CPUExecutionProvider"],
         )
-    if IS_SARIMA:
+    if BACKEND == "sarima":
         session, _input_name, _output_name = None, None, None
         print("Inference backend: sarima (refit-at-inference)")
     else:
@@ -238,7 +243,8 @@ def model_info():
         "onnx_file":          _active_info.get("onnx_file"),
         "train_start":        _active_info.get("train_start"),
         "train_end":          _active_info.get("train_end"),
-        "is_lstm":            IS_LSTM,
+        "backend":            BACKEND,
+        "input_shape":        INPUT_SHAPE,
         "inference_backend":  INFERENCE_BACKEND,
         "triton_url":         TRITON_URL if INFERENCE_BACKEND == "triton" else None,
         "feature_columns":    FEATURE_COLS,
@@ -251,7 +257,7 @@ def predict(req: PredictRequest):
     last_history_date = req.history[-1].date
     prediction_date = last_history_date + datetime.timedelta(days=1)
 
-    if IS_SARIMA:
+    if BACKEND == "sarima":
         from sarima_model import fit_predict_one_step
         history_series = [r.pm25 for r in sorted(req.history, key=lambda r: r.date)]
         order          = tuple(_sarima_order["order"])
@@ -264,7 +270,7 @@ def predict(req: PredictRequest):
                 detail="Could not generate features for the prediction date. "
                        "Ensure history is consecutive and sufficient.")
         X    = feat_df[FEATURE_COLS].values.astype(np.float32)
-        X_in = X.reshape(1, 1, -1) if IS_LSTM else X
+        X_in = X.reshape(1, 1, -1) if INPUT_SHAPE == "3d" else X
         if INFERENCE_BACKEND == "triton":
             import tritonclient.http as _th
             inp = _th.InferInput(_input_name, X_in.shape, "FP32")
