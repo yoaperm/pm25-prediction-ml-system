@@ -60,7 +60,16 @@ if os.path.exists(ACTIVE_MODEL_JSON):
     with open(ACTIVE_MODEL_JSON) as f:
         _active_info = json.load(f)
 
-IS_LSTM = _active_info.get("is_lstm", False)
+IS_LSTM   = _active_info.get("is_lstm", False)
+IS_SARIMA = _active_info.get("is_sarima", False)
+
+_sarima_order: dict = {}
+if IS_SARIMA:
+    _sarima_order_path = os.path.join(MODELS_DIR, "sarima_order.json")
+    if os.path.exists(_sarima_order_path):
+        with open(_sarima_order_path) as f:
+            _sarima_order = json.load(f)
+    print(f"Active model: SARIMA  order={_sarima_order.get('order')}  seasonal={_sarima_order.get('seasonal_order')}")
 
 # ── Inference backend setup ───────────────────────────────────────────────────
 if INFERENCE_BACKEND == "triton":
@@ -235,34 +244,32 @@ def model_info():
 
 @app.post("/predict", response_model=PredictResponse, dependencies=[Depends(verify_api_key)])
 def predict(req: PredictRequest):
-    # The last date in the history is the day before the prediction date
     last_history_date = req.history[-1].date
     prediction_date = last_history_date + datetime.timedelta(days=1)
 
-    # Build features for the prediction date
-    feat_df = _build_features(req.history)
-
-    if feat_df.empty:
-        raise HTTPException(
-            status_code=422,
-            detail="Could not generate features for the prediction date. "
-                   "Ensure history is consecutive and sufficient."
-        )
-
-    # Prepare the feature vector for the model
-    X = feat_df[FEATURE_COLS].values.astype(np.float32)
-    X_in = X.reshape(1, 1, -1) if IS_LSTM else X
-
-    # Perform inference
-    if INFERENCE_BACKEND == "triton":
-        import tritonclient.http as _th
-        inp = _th.InferInput(_input_name, X_in.shape, "FP32")
-        inp.set_data_from_numpy(X_in)
-        out = _th.InferRequestedOutput(_output_name)
-        result = _triton_client.infer(model_name=TRITON_MODEL_NAME, inputs=[inp], outputs=[out])
-        prediction_value = float(np.round(result.as_numpy(_output_name).flatten()[0], 2))
+    if IS_SARIMA:
+        from sarima_model import fit_predict_one_step
+        history_series = [r.pm25 for r in sorted(req.history, key=lambda r: r.date)]
+        order          = tuple(_sarima_order["order"])
+        seasonal_order = tuple(_sarima_order["seasonal_order"])
+        prediction_value = float(np.round(fit_predict_one_step(order, seasonal_order, history_series), 2))
     else:
-        prediction_value = float(np.round(session.run([_output_name], {_input_name: X_in})[0].flatten()[0], 2))
+        feat_df = _build_features(req.history)
+        if feat_df.empty:
+            raise HTTPException(status_code=422,
+                detail="Could not generate features for the prediction date. "
+                       "Ensure history is consecutive and sufficient.")
+        X    = feat_df[FEATURE_COLS].values.astype(np.float32)
+        X_in = X.reshape(1, 1, -1) if IS_LSTM else X
+        if INFERENCE_BACKEND == "triton":
+            import tritonclient.http as _th
+            inp = _th.InferInput(_input_name, X_in.shape, "FP32")
+            inp.set_data_from_numpy(X_in)
+            out = _th.InferRequestedOutput(_output_name)
+            result = _triton_client.infer(model_name=TRITON_MODEL_NAME, inputs=[inp], outputs=[out])
+            prediction_value = float(np.round(result.as_numpy(_output_name).flatten()[0], 2))
+        else:
+            prediction_value = float(np.round(session.run([_output_name], {_input_name: X_in})[0].flatten()[0], 2))
 
     # Log the prediction
     _append_csv(PREDICTIONS_LOG, {
