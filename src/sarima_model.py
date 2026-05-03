@@ -1,6 +1,13 @@
-from pmdarima import auto_arima
+from pmdarima import auto_arima, ARIMA
 import numpy as np
 import warnings
+
+
+def fit_sarima(order: tuple, seasonal_order: tuple, y_train: np.ndarray):
+    """Fit ARIMA with a fixed (already-selected) order. Used to recompute prod MAE on a new test set."""
+    model = ARIMA(order=order, seasonal_order=seasonal_order, suppress_warnings=True)
+    model.fit(y_train)
+    return model
 
 
 def train_sarima_with_tuning(y_train: np.ndarray, seasonal_period: int = 7):
