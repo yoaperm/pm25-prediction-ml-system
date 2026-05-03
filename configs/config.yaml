@@ -68,6 +68,9 @@ models:
       epochs: [50]
       batch_size: [16]
 
+  sarima:
+    seasonal_period: 7   # weekly cycle for daily PM2.5 data
+
 # Evaluation metrics
 evaluation:
   primary_metric: "MAE"

@@ -22,6 +22,7 @@ from preprocessing import preprocess_pipeline
 from feature_engineering import build_features, get_feature_columns
 from evaluate import evaluate_model, print_metrics
 from lstm_model import train_lstm_with_tuning
+from sarima_model import train_sarima_with_tuning, predict_sarima_rolling
 
 
 def get_model(name: str, params: dict = None):
@@ -100,7 +101,8 @@ def _load_active_model(models_dir: str, X_test, y_test):
     """
     Load the currently deployed production model via ONNX Runtime and return (None, mae, active_info).
     Reads models/active_model.json to find the current ONNX file.
-    Returns (None, None, None) if no production model exists yet.
+    Returns (None, None, None) if no production model exists yet or if active model is SARIMA
+    (SARIMA has no ONNX file and cannot be compared via this path).
     """
     import onnxruntime as rt
 
@@ -111,6 +113,9 @@ def _load_active_model(models_dir: str, X_test, y_test):
     with open(registry_path) as f:
         info = json.load(f)
 
+    if info.get("backend") == "sarima":
+        return None, None, None
+
     onnx_path = os.path.join(models_dir, "onnx", info["onnx_file"])
     if not os.path.exists(onnx_path):
         return None, None, None
@@ -119,7 +124,7 @@ def _load_active_model(models_dir: str, X_test, y_test):
     input_name  = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
 
-    if info.get("is_lstm"):
+    if info.get("input_shape") == "3d":
         X_in = X_test.reshape(X_test.shape[0], 1, X_test.shape[1]).astype(np.float32)
     else:
         X_in = X_test.astype(np.float32)
@@ -157,7 +162,8 @@ def _save_model(model, key: str, train_start: str, train_end: str,
         "model_key":   key,
         "train_start": train_start,
         "train_end":   train_end,
-        "is_lstm":     is_lstm,
+        "backend":     "onnx",
+        "input_shape": "3d" if is_lstm else "2d",
     }
 
     # Publish to Triton model repository (project_root/triton_model_repo/)
@@ -171,6 +177,25 @@ def _save_model(model, key: str, train_start: str, train_end: str,
         json.dump(info, f, indent=2)
 
     return onnx_path
+
+
+def _save_sarima_model(order, seasonal_order, train_start: str, train_end: str, models_dir: str):
+    """Save SARIMA order params and update active_model.json (no ONNX export)."""
+    sarima_order = {"order": list(order), "seasonal_order": list(seasonal_order)}
+    with open(os.path.join(models_dir, "sarima_order.json"), "w") as f:
+        json.dump(sarima_order, f, indent=2)
+    info = {
+        "model_key":      "sarima",
+        "backend":        "sarima",
+        "input_shape":    "2d",
+        "onnx_file":      None,
+        "train_start":    train_start,
+        "train_end":      train_end,
+        **sarima_order,
+    }
+    with open(os.path.join(models_dir, "active_model.json"), "w") as f:
+        json.dump(info, f, indent=2)
+    return info
 
 
 def train_all_models(config: dict):
@@ -292,6 +317,24 @@ def train_all_models(config: dict):
         trained["lstm"] = ("LSTM", lstm_model, m, True)
         results.append({"model": "LSTM", **m, "best_params": str(lstm_best)})
 
+    # 6. SARIMA — statistical time-series benchmark
+    # Uses only the pm25 endog series, not the feature matrix.
+    # Not added to `trained` for ONNX competition; handled separately below.
+    sarima_cfg = config.get("models", {}).get("sarima", {})
+    seasonal_period = sarima_cfg.get("seasonal_period", 7)
+    _sarima_fitted = None
+    _sarima_mae = None
+    with mlflow.start_run(run_name="SARIMA"):
+        sarima_model, sarima_best = train_sarima_with_tuning(y_train, seasonal_period)
+        y_pred_sarima = predict_sarima_rolling(sarima_model, y_train, y_test)
+        m = evaluate_model(y_test, y_pred_sarima)
+        print_metrics("SARIMA", m)
+        mlflow.log_params(sarima_best)
+        mlflow.log_metrics(m)
+        results.append({"model": "SARIMA", **m, "best_params": str(sarima_best)})
+        _sarima_fitted = sarima_model
+        _sarima_mae = m["MAE"]
+
     # ---- Save experiment results ----
     results_df = pd.DataFrame(results)
     results_df.to_csv(f"{results_dir}/experiment_results.csv", index=False)
@@ -331,6 +374,20 @@ def train_all_models(config: dict):
         status = "NOT_DEPLOYED"
         delta  = round(prod_mae - new_mae, 4)
         print(f"  → NOT DEPLOYED  new MAE {new_mae:.4f} >= production MAE {prod_mae:.4f}")
+
+    # ---- Check if SARIMA beats the deployed ONNX model ----
+    if _sarima_fitted is not None and _sarima_mae is not None:
+        current_best_mae = new_mae if status == "DEPLOYED" else (prod_mae if prod_mae is not None else float("inf"))
+        if _sarima_mae < current_best_mae:
+            _save_sarima_model(
+                _sarima_fitted.order,
+                _sarima_fitted.seasonal_order,
+                train_start, train_end, models_dir,
+            )
+            status = "DEPLOYED"
+            print(f"  → SARIMA DEPLOYED  MAE={_sarima_mae:.4f} beats best ONNX MAE={current_best_mae:.4f}")
+        else:
+            print(f"  → SARIMA NOT DEPLOYED  MAE={_sarima_mae:.4f} >= best ONNX MAE={current_best_mae:.4f}")
 
     # ---- Save feature columns ----
     with open(f"{models_dir}/feature_columns.json", "w") as f:

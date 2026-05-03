@@ -364,7 +364,8 @@ def _compare_and_deploy(**context):
             "model_key":   best_key,
             "train_start": train_start,
             "train_end":   train_end,
-            "is_lstm":     best_is_lstm,
+            "backend":     "onnx",
+            "input_shape": "3d" if best_is_lstm else "2d",
         }
         with open(f"{MODELS_DIR}/active_model.json", "w") as f:
             json.dump(info, f, indent=2)
