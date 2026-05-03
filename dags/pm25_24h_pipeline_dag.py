@@ -144,6 +144,43 @@ def _compute_psi(predicted, actual, bins=10):
     return round(float(np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct))), 4)
 
 
+def _query_stored_predictions(station_id, db_url, rolling_days):
+    """Query pm25_api_daily_predictions joined with actuals for recent days.
+
+    Returns a DataFrame with (predicted_pm25, actual_pm25) columns,
+    or an empty DataFrame if the table doesn't exist or has no data.
+    """
+    import pandas as pd
+    import sqlalchemy
+    from sqlalchemy import text
+
+    engine = sqlalchemy.create_engine(db_url)
+    query = text("""
+        SELECT
+            p.prediction_date,
+            p.predicted_pm25,
+            AVG(r.pm25) AS actual_pm25
+        FROM pm25_api_daily_predictions p
+        JOIN pm25_raw_hourly r
+          ON r.station_id    = p.source_station_id
+         AND DATE(r.timestamp) = p.prediction_date
+        WHERE p.source_station_id = :station_id
+          AND p.prediction_date  >= CURRENT_DATE - :rolling_days
+          AND r.pm25             IS NOT NULL
+        GROUP BY p.prediction_date, p.predicted_pm25
+        ORDER BY p.prediction_date
+    """)
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(query, {"station_id": station_id, "rolling_days": rolling_days})
+            df = pd.DataFrame(result.fetchall(), columns=result.keys())
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        engine.dispose()
+    return df
+
+
 # ── Per-station health check ──────────────────────────────────────────────────
 def _check_station_health(station_id, **context):
     import json
@@ -176,6 +213,49 @@ def _check_station_health(station_id, **context):
         model_info = json.load(f)
 
     if model_info.get("backend") == "sarima":
+        import numpy as np
+        import pandas as pd
+
+        # ── Fast path: use stored predictions from prediction DAG ──
+        MIN_DAILY_PAIRS = 7
+        stored = _query_stored_predictions(station_id, db_url, ROLLING_DAYS)
+        if len(stored) >= MIN_DAILY_PAIRS:
+            y_pred   = stored["predicted_pm25"].values.astype(float)
+            y_actual = stored["actual_pm25"].values.astype(float)
+            rmse = round(float(np.sqrt(np.mean((y_actual - y_pred) ** 2))), 4)
+            mae  = round(float(np.mean(np.abs(y_actual - y_pred))), 4)
+            psi  = _compute_psi(y_pred, y_actual)
+
+            rmse_degraded = rmse > rmse_thresh
+            psi_degraded  = psi > psi_thresh
+            needs_retrain = rmse_degraded or psi_degraded
+            rmse_status = "DEGRADED" if rmse_degraded else "OK"
+            psi_label   = "stable" if psi < 0.1 else ("moderate" if psi < 0.2 else "significant")
+            psi_status  = "DEGRADED" if psi_degraded else "OK"
+            print(f"  [fast-path] {len(stored)} stored daily predictions")
+            print(f"  RMSE={rmse:.4f}  threshold={rmse_thresh}  [{rmse_status}]")
+            print(f"  MAE={mae:.4f}  PSI={psi:.4f}  threshold={psi_thresh}  [{psi_status}]")
+            print(f"  needs_retraining={needs_retrain}")
+
+            result = {
+                "station_id": station_id, "status": "degraded" if needs_retrain else "healthy",
+                "needs_retraining": needs_retrain, "rmse": rmse, "rmse_threshold": rmse_thresh,
+                "rmse_degraded": rmse_degraded, "mae": mae, "psi": psi,
+                "psi_threshold": psi_thresh, "psi_status": psi_label, "psi_degraded": psi_degraded,
+                "evaluated_pairs": len(stored), "model_key": "sarima",
+                "train_end": model_info.get("train_end"),
+                "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            }
+            os.makedirs(RESULTS_DIR, exist_ok=True)
+            report_path = f"{RESULTS_DIR}/monitoring_24h_results.csv"
+            exists = os.path.exists(report_path)
+            pd.DataFrame([result]).to_csv(report_path, mode="a", header=not exists, index=False)
+            ti.xcom_push(key=f"health_{station_id}", value=result)
+            return
+
+        print(f"  [fast-path] Only {len(stored)} stored predictions — falling back to re-fit")
+
+        # ── Slow path: re-fit SARIMA on recent data ──
         import sys; sys.path.insert(0, SRC)
         from sarima_model import fit_sarima, predict_sarima_n_ahead_rolling
 
