@@ -501,8 +501,14 @@ def _train_sarima_24h(**context):
     pm25_raw_train = pd.read_parquet(f"{base}/pm25_raw_train.parquet")["pm25"].values
     pm25_raw_test  = pd.read_parquet(f"{base}/pm25_raw_test.parquet")["pm25"].values
 
+    # Limit auto_arima input to last 90 days — full 3yr series takes 20+ min and
+    # hits the Airflow heartbeat timeout. 2160 obs covers 90 daily cycles (m=24),
+    # enough for stable parameter estimation. Rolling predictions start from here.
+    MAX_SARIMA_OBS = 90 * 24
+    pm25_raw_train_sarima = pm25_raw_train[-MAX_SARIMA_OBS:]
+
     model, params = train_sarima_with_tuning(
-        pm25_raw_train,
+        pm25_raw_train_sarima,
         seasonal_period=24,
         max_p=2, max_q=2, max_P=1, max_Q=1, max_d=1, max_D=1,
     )
