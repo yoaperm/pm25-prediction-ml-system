@@ -12,6 +12,8 @@ from typing import List, Dict, Tuple, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
+HOURLY_PREDICTION_TABLE = "pm25_predicted_hourly"
+
 
 class PM25Database:
     """PostgreSQL helper for PM2.5 hourly ingestion."""
@@ -562,14 +564,12 @@ class PM25Database:
             self.conn.rollback()
             raise
 
-    def ensure_hourly_prediction_table(
-        self,
-        table_name: str = "pm25_api_hourly_predictions",
-    ) -> bool:
+    def ensure_hourly_prediction_table(self) -> bool:
         """Create hourly API prediction table if not exists."""
         if not self.conn:
             self.connect()
 
+        table_name = HOURLY_PREDICTION_TABLE
         create_sql = sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {table_name} (
@@ -632,7 +632,6 @@ class PM25Database:
     def insert_hourly_prediction_records(
         self,
         records: List[Dict],
-        table_name: str = "pm25_api_hourly_predictions",
         commit: bool = True,
     ) -> int:
         """Insert or update hourly prediction records."""
@@ -643,6 +642,7 @@ class PM25Database:
             logger.warning("No hourly prediction records to insert")
             return 0
 
+        table_name = HOURLY_PREDICTION_TABLE
         values = self._prepare_hourly_prediction_values(records)
         insert_sql = sql.SQL(
             """
@@ -703,7 +703,6 @@ class PM25Database:
     def delete_hourly_prediction_records(
         self,
         records: List[Dict],
-        table_name: str = "pm25_api_hourly_predictions",
         commit: bool = True,
     ) -> int:
         """Delete hourly prediction rows matching exact timestamp + station pairs."""
@@ -720,6 +719,7 @@ class PM25Database:
         if not keys:
             return 0
 
+        table_name = HOURLY_PREDICTION_TABLE
         delete_sql = sql.SQL(
             """
             DELETE FROM {table_name} AS target
@@ -753,7 +753,6 @@ class PM25Database:
     def replace_hourly_prediction_records(
         self,
         records: List[Dict],
-        table_name: str = "pm25_api_hourly_predictions",
     ) -> Tuple[int, int]:
         """Atomically replace exact hourly prediction rows."""
         if not self.conn:
@@ -762,12 +761,10 @@ class PM25Database:
         try:
             deleted_count = self.delete_hourly_prediction_records(
                 records=records,
-                table_name=table_name,
                 commit=False,
             )
             inserted_count = self.insert_hourly_prediction_records(
                 records=records,
-                table_name=table_name,
                 commit=False,
             )
             self.conn.commit()

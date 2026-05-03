@@ -3,7 +3,7 @@ PM2.5 24-Hour Hourly Prediction DAG
 ===================================
 Daily DAG that calls a T+1h Triton model recursively to generate hourly
 PM2.5 predictions for the next 24 hours, then stores the 24 forecast rows
-per station in PostgreSQL table pm25_api_hourly_predictions.
+per station in PostgreSQL table pm25_predicted_hourly.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
-import re
 import sys
 from urllib import error, request
 
@@ -28,18 +27,13 @@ BANGKOK_TIMEZONE_NAME = "Asia/Bangkok"
 BANGKOK_TZ = pendulum.timezone(BANGKOK_TIMEZONE_NAME)
 TRITON_URL = os.environ.get("TRITON_URL", "http://triton:8000")
 MODELS_BASE = os.environ.get("MODELS_DIR", "/app/models")
-RESULTS_DIR = os.environ.get("RESULTS_DIR", "/app/results")
 DEFAULT_DB_URL = "postgresql://postgres:postgres@postgres:5432/pm25"
-DEFAULT_PREDICTION_TABLE = os.environ.get(
-    "PM25_HOURLY_PREDICTIONS_TABLE",
-    "pm25_api_hourly_predictions",
-)
+DEFAULT_PREDICTION_TABLE = "pm25_predicted_hourly"
 STATION_IDS = (56, 57, 58, 59, 61)
 HISTORY_HOURS = 72
 MIN_HISTORY_HOURS = 25
 FORECAST_HOURS = 24
 BACKFILL_DAYS = 365
-BATCH_DIR = os.path.join(RESULTS_DIR, "hourly_prediction_batches")
 BATCH_SIZE = 1000
 
 
@@ -139,22 +133,15 @@ def _load_hourly_bounds_for_station(station_id: int, db_url: str):
     return pd.Timestamp(row["min_ts"]), pd.Timestamp(row["max_ts"])
 
 
-def _safe_table_name(table_name: str) -> str:
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
-        raise ValueError(f"Unsafe table name: {table_name}")
-    return table_name
-
-
-def _prediction_table_has_rows(db_url: str, table_name: str) -> bool:
+def _prediction_table_has_rows(db_url: str) -> bool:
     import sqlalchemy
 
-    table_name = _safe_table_name(table_name)
     engine = sqlalchemy.create_engine(db_url)
     try:
         inspector = sqlalchemy.inspect(engine)
-        if not inspector.has_table(table_name):
+        if not inspector.has_table(DEFAULT_PREDICTION_TABLE):
             return False
-        query = sqlalchemy.text(f"SELECT EXISTS (SELECT 1 FROM {table_name} LIMIT 1)")
+        query = sqlalchemy.text("SELECT EXISTS (SELECT 1 FROM pm25_predicted_hourly LIMIT 1)")
         with engine.connect() as conn:
             return bool(conn.execute(query).scalar())
     finally:
@@ -194,7 +181,7 @@ def _prepare_prediction_jobs(**context):
     db_url = os.environ.get("PM25_DB_URL", DEFAULT_DB_URL)
     jobs = []
     skipped = []
-    is_first_run = not _prediction_table_has_rows(db_url, DEFAULT_PREDICTION_TABLE)
+    is_first_run = not _prediction_table_has_rows(db_url)
 
     for station_id in STATION_IDS:
         try:
@@ -289,120 +276,105 @@ def _call_triton_prediction(**context):
     generated_at = datetime.now(timezone.utc).isoformat()
     task_run_at = context["logical_date"].isoformat()
     db_url = os.environ.get("PM25_DB_URL", DEFAULT_DB_URL)
-    os.makedirs(BATCH_DIR, exist_ok=True)
-    batch_path = os.path.join(BATCH_DIR, f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', context['run_id'])}.jsonl")
-    row_count = 0
+    records = []
 
-    with open(batch_path, "w", encoding="utf-8") as f:
-        for job in jobs:
-            history_df = _load_hourly_until_for_station(
-                station_id=job["source_station_id"],
-                db_url=db_url,
-                end_timestamp=job["history_end_timestamp"],
+    for job in jobs:
+        history_df = _load_hourly_until_for_station(
+            station_id=job["source_station_id"],
+            db_url=db_url,
+            end_timestamp=job["history_end_timestamp"],
+        )
+        if history_df.empty or len(history_df) < MIN_HISTORY_HOURS:
+            logger.warning(
+                "[history] station=%s anchor=%s insufficient history",
+                job["source_station_id"],
+                job["history_end_timestamp"],
             )
-            if history_df.empty or len(history_df) < MIN_HISTORY_HOURS:
-                logger.warning(
-                    "[history] station=%s anchor=%s insufficient history",
-                    job["source_station_id"],
-                    job["history_end_timestamp"],
-                )
-                continue
+            continue
 
-            history_start_timestamp = history_df["datetime"].iloc[0].isoformat()
-            history_end_timestamp = history_df["datetime"].iloc[-1].isoformat()
-            history_hours = int(len(history_df))
-            filled_history_hours = int(history_df["pm25_observed"].isna().sum()) if "pm25_observed" in history_df else 0
+        history_start_timestamp = history_df["datetime"].iloc[0].isoformat()
+        history_end_timestamp = history_df["datetime"].iloc[-1].isoformat()
+        history_hours = int(len(history_df))
+        filled_history_hours = int(history_df["pm25_observed"].isna().sum()) if "pm25_observed" in history_df else 0
 
-            history_df = history_df[["datetime", "pm25"]].copy()
-            for horizon_hour in range(1, FORECAST_HOURS + 1):
-                try:
-                    feat_df = build_next_hour_inference_features(history_df, job["feature_cols"])
-                    if feat_df.empty:
-                        logger.error("[features] %s horizon=%s produced no feature row", job["model_name"], horizon_hour)
-                        break
-
-                    prediction = _infer_triton(
-                        job=job,
-                        features=feat_df.iloc[0].astype(float).tolist(),
-                        triton_url=triton_url,
-                    )
-                except error.HTTPError as exc:
-                    logger.error("[triton] %s HTTP %s: %s", job["model_name"], exc.code, exc.read().decode())
-                    break
-                except Exception as exc:
-                    logger.error("[triton] %s horizon=%s failed: %s", job["model_name"], horizon_hour, exc)
+        history_df = history_df[["datetime", "pm25"]].copy()
+        for horizon_hour in range(1, FORECAST_HOURS + 1):
+            try:
+                feat_df = build_next_hour_inference_features(history_df, job["feature_cols"])
+                if feat_df.empty:
+                    logger.error("[features] %s horizon=%s produced no feature row", job["model_name"], horizon_hour)
                     break
 
-                prediction_ts = history_df["datetime"].iloc[-1] + timedelta(hours=1)
-                row = {
-                    "prediction_timestamp": prediction_ts.isoformat(),
-                    "predicted_pm25": prediction,
-                    "unit": "µg/m³",
-                    "model": job["model_name"],
-                    "source_station_id": job["source_station_id"],
-                    "history_hours": history_hours,
-                    "history_start_timestamp": history_start_timestamp,
-                    "history_end_timestamp": history_end_timestamp,
-                    "filled_history_hours": filled_history_hours,
-                    "prediction_generated_at": generated_at,
-                    "run_type": job["run_type"],
-                    "dag_id": context["dag"].dag_id,
-                    "dag_run_id": context["run_id"],
-                    "task_run_at": task_run_at,
-                }
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-                row_count += 1
-
-                history_df = pd.concat(
-                    [
-                        history_df,
-                        pd.DataFrame([{"datetime": prediction_ts, "pm25": prediction}]),
-                    ],
-                    ignore_index=True,
+                prediction = _infer_triton(
+                    job=job,
+                    features=feat_df.iloc[0].astype(float).tolist(),
+                    triton_url=triton_url,
                 )
+            except error.HTTPError as exc:
+                logger.error("[triton] %s HTTP %s: %s", job["model_name"], exc.code, exc.read().decode())
+                break
+            except Exception as exc:
+                logger.error("[triton] %s horizon=%s failed: %s", job["model_name"], horizon_hour, exc)
+                break
 
-    if row_count == 0:
+            prediction_ts = history_df["datetime"].iloc[-1] + timedelta(hours=1)
+            records.append({
+                "prediction_timestamp": prediction_ts.isoformat(),
+                "predicted_pm25": prediction,
+                "unit": "µg/m³",
+                "model": job["model_name"],
+                "source_station_id": job["source_station_id"],
+                "history_hours": history_hours,
+                "history_start_timestamp": history_start_timestamp,
+                "history_end_timestamp": history_end_timestamp,
+                "filled_history_hours": filled_history_hours,
+                "prediction_generated_at": generated_at,
+                "run_type": job["run_type"],
+                "dag_id": context["dag"].dag_id,
+                "dag_run_id": context["run_id"],
+                "task_run_at": task_run_at,
+            })
+
+            history_df = pd.concat(
+                [
+                    history_df,
+                    pd.DataFrame([{"datetime": prediction_ts, "pm25": prediction}]),
+                ],
+                ignore_index=True,
+            )
+
+    if not records:
         raise ValueError("[triton] No 24-hour hourly predictions generated")
 
-    ti.xcom_push(key="prediction_batch_path", value=batch_path)
-    ti.xcom_push(key="prediction_rows", value=row_count)
-    logger.info("[triton] Generated %s hourly predictions -> %s", row_count, batch_path)
-    return {"prediction_rows": row_count, "batch_path": batch_path, "triton_url": triton_url}
+    ti.xcom_push(key="prediction_records", value=records)
+    ti.xcom_push(key="prediction_rows", value=len(records))
+    logger.info("[triton] Generated %s hourly predictions", len(records))
+    return {"prediction_rows": len(records), "triton_url": triton_url}
 
 
 def _store_predictions(**context):
     sys.path.insert(0, SRC)
+    import pandas as pd
     from airflow_db import get_db_connection
 
     ti = context["ti"]
-    batch_path = ti.xcom_pull(task_ids="call_triton_prediction", key="prediction_batch_path")
-    if not batch_path or not os.path.exists(batch_path):
+    records = ti.xcom_pull(task_ids="call_triton_prediction", key="prediction_records") or []
+    if not records:
         return {"deleted": 0, "stored": 0}
 
+    prediction_df = pd.DataFrame(records)
     stored_count = 0
     db = get_db_connection()
     try:
-        db.ensure_hourly_prediction_table(DEFAULT_PREDICTION_TABLE)
-        chunk = []
-        with open(batch_path, "r", encoding="utf-8") as f:
-            for line in f:
-                chunk.append(json.loads(line))
-                if len(chunk) >= BATCH_SIZE:
-                    stored_count += db.insert_hourly_prediction_records(
-                        records=chunk,
-                        table_name=DEFAULT_PREDICTION_TABLE,
-                    )
-                    chunk = []
-        if chunk:
-            stored_count += db.insert_hourly_prediction_records(
-                records=chunk,
-                table_name=DEFAULT_PREDICTION_TABLE,
-            )
+        db.ensure_hourly_prediction_table()
+        for start_idx in range(0, len(prediction_df), BATCH_SIZE):
+            chunk = prediction_df.iloc[start_idx : start_idx + BATCH_SIZE].to_dict("records")
+            stored_count += db.insert_hourly_prediction_records(records=chunk)
     finally:
         db.close()
 
     logger.info("[store] Stored %s rows in %s", stored_count, DEFAULT_PREDICTION_TABLE)
-    return {"deleted": 0, "stored": stored_count, "table_name": DEFAULT_PREDICTION_TABLE, "batch_path": batch_path}
+    return {"deleted": 0, "stored": stored_count, "table_name": DEFAULT_PREDICTION_TABLE}
 
 
 with DAG(

@@ -17,7 +17,6 @@ x-airflow-common: &airflow-common
     PM25_API_URL: ${PM25_API_URL:-http://api:8000}
     API_KEY: ${API_KEY:-foonalert-secret-key}
     PM25_PREDICTIONS_TABLE: ${PM25_PREDICTIONS_TABLE:-pm25_api_daily_predictions}
-    PM25_HOURLY_PREDICTIONS_TABLE: ${PM25_HOURLY_PREDICTIONS_TABLE:-pm25_api_hourly_predictions}
     PREDICTION_SOURCE_STATION_ID: ${PREDICTION_SOURCE_STATION_ID:-56}
     PREDICTION_HISTORY_DAYS: ${PREDICTION_HISTORY_DAYS:-15}
   volumes:

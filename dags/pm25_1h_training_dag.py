@@ -1,7 +1,7 @@
 """
 PM2.5 T+1h Training DAG
 =======================
-Manual training pipeline for next-hour PM2.5 models.
+Daily training pipeline for next-hour PM2.5 models.
 
 Trigger manually with:
     {"station_id": 56}
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime
 
+import pendulum
 from airflow import DAG
 from airflow.models.param import Param
 from airflow.operators.python import PythonOperator
@@ -20,6 +20,7 @@ from airflow.operators.python import PythonOperator
 SRC = "/app/src"
 SCRIPTS = "/app/scripts"
 DEFAULT_DB_URL = "postgresql://postgres:postgres@postgres:5432/pm25"
+BANGKOK_TIMEZONE_NAME = "Asia/Bangkok"
 STATION_IDS = [56, 57, 58, 59, 61]
 
 
@@ -53,8 +54,8 @@ def _train_station(**context):
 with DAG(
     dag_id="pm25_1h_training",
     description="Train and deploy T+1h PM2.5 forecast models",
-    schedule=None,
-    start_date=datetime(2024, 1, 1),
+    schedule="0 0 * * *",
+    start_date=pendulum.datetime(2024, 1, 1, tz=BANGKOK_TIMEZONE_NAME),
     catchup=False,
     params={
         "station_id": Param(
