@@ -12,6 +12,8 @@ from typing import List, Dict, Tuple, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
+HOURLY_PREDICTION_TABLE = "pm25_predicted_hourly"
+
 
 class PM25Database:
     """PostgreSQL helper for PM2.5 hourly ingestion."""
@@ -140,6 +142,27 @@ class PM25Database:
                 record.get("history_start_date"),
                 record.get("history_end_date"),
                 record.get("filled_history_days", 0),
+                record.get("prediction_generated_at"),
+                record.get("run_type"),
+                record.get("dag_id"),
+                record.get("dag_run_id"),
+                record.get("task_run_at"),
+            )
+            for record in records
+        ]
+
+    def _prepare_hourly_prediction_values(self, records: List[Dict]) -> List[Tuple]:
+        return [
+            (
+                record.get("prediction_timestamp"),
+                record.get("predicted_pm25"),
+                record.get("unit"),
+                record.get("model"),
+                record.get("source_station_id"),
+                record.get("history_hours"),
+                record.get("history_start_timestamp"),
+                record.get("history_end_timestamp"),
+                record.get("filled_history_hours", 0),
                 record.get("prediction_generated_at"),
                 record.get("run_type"),
                 record.get("dag_id"),
@@ -533,6 +556,215 @@ class PM25Database:
             inserted_count = self.insert_api_prediction_records(
                 records=records,
                 table_name=table_name,
+                commit=False,
+            )
+            self.conn.commit()
+            return deleted_count, inserted_count
+        except psycopg2.Error:
+            self.conn.rollback()
+            raise
+
+    def ensure_hourly_prediction_table(self) -> bool:
+        """Create hourly API prediction table if not exists."""
+        if not self.conn:
+            self.connect()
+
+        table_name = HOURLY_PREDICTION_TABLE
+        create_sql = sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id BIGSERIAL PRIMARY KEY,
+                prediction_timestamp TIMESTAMPTZ NOT NULL,
+                predicted_pm25 DOUBLE PRECISION NOT NULL,
+                unit TEXT NOT NULL,
+                model TEXT NOT NULL,
+                source_station_id INT NOT NULL,
+                history_hours INT NOT NULL CHECK (history_hours > 0),
+                history_start_timestamp TIMESTAMPTZ NOT NULL,
+                history_end_timestamp TIMESTAMPTZ NOT NULL,
+                filled_history_hours INT NOT NULL DEFAULT 0 CHECK (filled_history_hours >= 0),
+                prediction_generated_at TIMESTAMPTZ NOT NULL,
+                run_type TEXT NOT NULL,
+                dag_id TEXT,
+                dag_run_id TEXT,
+                task_run_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (prediction_timestamp, source_station_id)
+            );
+            """
+        ).format(table_name=sql.Identifier(table_name))
+
+        index_sql = [
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS {index_name}
+                ON {table_name}(prediction_timestamp DESC);
+                """
+            ).format(
+                index_name=sql.Identifier(f"idx_{table_name}_prediction_timestamp"),
+                table_name=sql.Identifier(table_name),
+            ),
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS {index_name}
+                ON {table_name}(source_station_id, prediction_timestamp DESC);
+                """
+            ).format(
+                index_name=sql.Identifier(f"idx_{table_name}_station_prediction_timestamp"),
+                table_name=sql.Identifier(table_name),
+            ),
+        ]
+
+        try:
+            cur = self.conn.cursor()
+            cur.execute(create_sql)
+            for statement in index_sql:
+                cur.execute(statement)
+            self.conn.commit()
+            logger.info("%s table and indexes ensured", table_name)
+            cur.close()
+            return True
+        except psycopg2.Error as e:
+            self.conn.rollback()
+            logger.error("Failed to create %s table: %s", table_name, e)
+            raise
+
+    def insert_hourly_prediction_records(
+        self,
+        records: List[Dict],
+        commit: bool = True,
+    ) -> int:
+        """Insert or update hourly prediction records."""
+        if not self.conn:
+            self.connect()
+
+        if not records:
+            logger.warning("No hourly prediction records to insert")
+            return 0
+
+        table_name = HOURLY_PREDICTION_TABLE
+        values = self._prepare_hourly_prediction_values(records)
+        insert_sql = sql.SQL(
+            """
+            INSERT INTO {table_name} (
+                prediction_timestamp,
+                predicted_pm25,
+                unit,
+                model,
+                source_station_id,
+                history_hours,
+                history_start_timestamp,
+                history_end_timestamp,
+                filled_history_hours,
+                prediction_generated_at,
+                run_type,
+                dag_id,
+                dag_run_id,
+                task_run_at
+            )
+            VALUES %s
+            ON CONFLICT (prediction_timestamp, source_station_id) DO UPDATE SET
+                predicted_pm25 = EXCLUDED.predicted_pm25,
+                unit = EXCLUDED.unit,
+                model = EXCLUDED.model,
+                history_hours = EXCLUDED.history_hours,
+                history_start_timestamp = EXCLUDED.history_start_timestamp,
+                history_end_timestamp = EXCLUDED.history_end_timestamp,
+                filled_history_hours = EXCLUDED.filled_history_hours,
+                prediction_generated_at = EXCLUDED.prediction_generated_at,
+                run_type = EXCLUDED.run_type,
+                dag_id = EXCLUDED.dag_id,
+                dag_run_id = EXCLUDED.dag_run_id,
+                task_run_at = EXCLUDED.task_run_at
+            RETURNING 1;
+            """
+        ).format(table_name=sql.Identifier(table_name))
+
+        try:
+            cur = self.conn.cursor()
+            inserted_rows = execute_values(
+                cur,
+                insert_sql.as_string(self.conn),
+                values,
+                fetch=True,
+            )
+            if commit:
+                self.conn.commit()
+            inserted = len(inserted_rows)
+            cur.close()
+            logger.info("Inserted or updated %s rows in %s", inserted, table_name)
+            return inserted
+        except psycopg2.Error as e:
+            if commit:
+                self.conn.rollback()
+            logger.error("Insert into %s failed: %s", table_name, e)
+            raise
+
+    def delete_hourly_prediction_records(
+        self,
+        records: List[Dict],
+        commit: bool = True,
+    ) -> int:
+        """Delete hourly prediction rows matching exact timestamp + station pairs."""
+        if not self.conn:
+            self.connect()
+
+        keys = sorted(
+            {
+                (record.get("prediction_timestamp"), record.get("source_station_id"))
+                for record in records
+                if record.get("prediction_timestamp") and record.get("source_station_id") is not None
+            }
+        )
+        if not keys:
+            return 0
+
+        table_name = HOURLY_PREDICTION_TABLE
+        delete_sql = sql.SQL(
+            """
+            DELETE FROM {table_name} AS target
+            USING (VALUES %s) AS doomed(prediction_timestamp_text, source_station_id)
+            WHERE target.prediction_timestamp = doomed.prediction_timestamp_text::timestamptz
+              AND target.source_station_id = doomed.source_station_id
+            RETURNING 1;
+            """
+        ).format(table_name=sql.Identifier(table_name))
+
+        try:
+            cur = self.conn.cursor()
+            deleted_rows = execute_values(
+                cur,
+                delete_sql.as_string(self.conn),
+                keys,
+                fetch=True,
+            )
+            if commit:
+                self.conn.commit()
+            deleted_count = len(deleted_rows)
+            cur.close()
+            logger.info("Deleted %s matching rows from %s", deleted_count, table_name)
+            return deleted_count
+        except psycopg2.Error as e:
+            if commit:
+                self.conn.rollback()
+            logger.error("Exact-match delete from %s failed: %s", table_name, e)
+            raise
+
+    def replace_hourly_prediction_records(
+        self,
+        records: List[Dict],
+    ) -> Tuple[int, int]:
+        """Atomically replace exact hourly prediction rows."""
+        if not self.conn:
+            self.connect()
+
+        try:
+            deleted_count = self.delete_hourly_prediction_records(
+                records=records,
+                commit=False,
+            )
+            inserted_count = self.insert_hourly_prediction_records(
+                records=records,
                 commit=False,
             )
             self.conn.commit()
