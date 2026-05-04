@@ -235,6 +235,14 @@ def _feature_engineering(**context):
                       ("y_test",  test_df[target_col].values)]:
         pd.DataFrame(arr, columns=["target"]).to_parquet(f"{base}/{name}.parquet", index=False)
 
+    # Raw pm25 series for SARIMA (endog only — no shifting, no feature engineering)
+    for name, df_split in [("pm25_raw_train", train_df),
+                            ("pm25_raw_val",   val_df),
+                            ("pm25_raw_test",  test_df)]:
+        pd.DataFrame({"pm25": df_split["pm25"].values}).to_parquet(
+            f"{base}/{name}.parquet", index=False
+        )
+
     meta = {
         "feature_cols": feature_cols,
         "n_features":   n_features,
@@ -475,8 +483,53 @@ def _train_lstm(**context):
     print(f"  LSTM  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}  epochs={epochs_done}  device={device_str}")
 
 
-# ── Task 3: Evaluate all 5 temp models ───────────────────────────────────────
+# ── Task 2f: SARIMA (statistical time-series benchmark, m=24) ────────────────
+def _train_sarima_24h(**context):
+    import json
+    import pandas as pd
+    import mlflow
+    import sys; sys.path.insert(0, SRC)
+    from sarima_model import train_sarima_with_tuning, predict_sarima_n_ahead_rolling
+    from evaluate import evaluate_model
+
+    station_id = _station_id(context)
+    _setup_mlflow(station_id)
+    base       = _processed_dir(station_id)
+    models_dir = _models_dir(station_id)
+
+    y_test         = pd.read_parquet(f"{base}/y_test.parquet")["target"].values
+    pm25_raw_train = pd.read_parquet(f"{base}/pm25_raw_train.parquet")["pm25"].values
+    pm25_raw_test  = pd.read_parquet(f"{base}/pm25_raw_test.parquet")["pm25"].values
+
+    # Limit auto_arima input to last 90 days — full 3yr series takes 20+ min and
+    # hits the Airflow heartbeat timeout. 2160 obs covers 90 daily cycles (m=24),
+    # enough for stable parameter estimation. Rolling predictions start from here.
+    MAX_SARIMA_OBS = 90 * 24
+    pm25_raw_train_sarima = pm25_raw_train[-MAX_SARIMA_OBS:]
+
+    model, params = train_sarima_with_tuning(
+        pm25_raw_train_sarima,
+        seasonal_period=24,
+        max_p=2, max_q=2, max_P=1, max_Q=1, max_d=1, max_D=1,
+    )
+    y_pred  = predict_sarima_n_ahead_rolling(model, pm25_raw_test, n_ahead=FORECAST_HOUR)
+    metrics = evaluate_model(y_test, y_pred)
+
+    with mlflow.start_run(run_name="SARIMA_24h"):
+        mlflow.log_params({**params, "station": station_id, "seasonal_period": 24})
+        mlflow.log_metrics(metrics)
+
+    result = {"model": "SARIMA", **metrics,
+              "order": params["order"], "seasonal_order": params["seasonal_order"]}
+    with open(f"{models_dir}/_tmp_sarima_result.json", "w") as f:
+        json.dump(result, f)
+    print(f"  SARIMA  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}  "
+          f"order={params['order']} seasonal={params['seasonal_order']}")
+
+
+# ── Task 3: Evaluate all 6 temp models ───────────────────────────────────────
 def _evaluate(**context):
+    import json
     import pandas as pd
     import sys; sys.path.insert(0, SRC)
     from evaluate import evaluate_model, print_metrics
@@ -505,6 +558,15 @@ def _evaluate(**context):
         metrics = evaluate_model(y_test, preds)
         print_metrics(name, metrics)
         results.append({"model": name, **metrics})
+
+    # SARIMA result (no ONNX file — read from JSON written by _train_sarima_24h)
+    sarima_result_path = f"{_models_dir(station_id)}/_tmp_sarima_result.json"
+    if os.path.exists(sarima_result_path):
+        with open(sarima_result_path) as f:
+            sr = json.load(f)
+        sarima_metrics = {k: sr[k] for k in ("RMSE", "MAE", "R2") if k in sr}
+        print_metrics("SARIMA", sarima_metrics)
+        results.append({"model": "SARIMA", **sarima_metrics})
 
     df = pd.DataFrame(results)
     best_idx = df['RMSE'].idxmin()
@@ -582,6 +644,8 @@ def _compare_and_deploy(**context):
 
     train_start = meta["train_start"]
     train_end   = meta["train_end"]
+    models_dir  = _models_dir(station_id)
+    base        = _processed_dir(station_id)
 
     tmp_keys = {
         "linear_regression": ("Linear Regression", False),
@@ -598,90 +662,140 @@ def _compare_and_deploy(**context):
             continue
         preds = _onnx_predict(path, X_3d if is_lstm else X_f)
         metrics = evaluate_model(y_test, preds)
-        rmse = metrics["RMSE"]
-        mae = metrics["MAE"]
-        trained[key] = (name, rmse, mae, is_lstm)
+        trained[key] = (name, metrics["RMSE"], metrics["MAE"], is_lstm)
 
     if not trained:
         raise RuntimeError("No trained models found — all tmp ONNX missing")
 
-    best_key = min(trained, key=lambda k: trained[k][1])  # Select by RMSE (index 1)
+    # Best ONNX candidate
+    best_key = min(trained, key=lambda k: trained[k][1])
     best_name, new_rmse, new_mae, best_is_lstm = trained[best_key]
+
+    # Load SARIMA candidate (written by _train_sarima_24h)
+    sarima_tmp_path = f"{models_dir}/_tmp_sarima_result.json"
+    sarima_candidate = None
+    if os.path.exists(sarima_tmp_path):
+        with open(sarima_tmp_path) as f:
+            sc = json.load(f)
+        sarima_candidate = {"rmse": sc["RMSE"], "mae": sc["MAE"],
+                            "order": sc["order"], "seasonal_order": sc["seasonal_order"]}
+
+    # Check if SARIMA beats the best ONNX model
+    sarima_wins = sarima_candidate is not None and sarima_candidate["rmse"] < new_rmse
+    if sarima_wins:
+        new_rmse  = sarima_candidate["rmse"]
+        new_mae   = sarima_candidate["mae"]
+        best_name = "SARIMA"
     print(f"Best new model: {best_name}  RMSE={new_rmse:.4f}  MAE={new_mae:.4f}")
 
     # Load production model for comparison
-    models_dir = _models_dir(station_id)
-    registry   = f"{models_dir}/active_model.json"
-    prod_rmse  = None
-    prod_mae   = None
-    old_info   = None
+    registry  = f"{models_dir}/active_model.json"
+    prod_rmse = None
+    prod_mae  = None
+    old_info  = None
 
     if os.path.exists(registry):
         with open(registry) as f:
             old_info = json.load(f)
-        onnx_prod = f"{models_dir}/onnx/{old_info['onnx_file']}"
-        if os.path.exists(onnx_prod):
-            X_in       = X_3d if old_info.get("input_shape") == "3d" else X_f
-            preds_prod = _onnx_predict(onnx_prod, X_in)
-            if preds_prod.shape[0] != y_test.shape[0]:
-                print("  Prod model incompatible shape — treating as first deploy")
-                old_info = None
-            else:
+
+        if old_info.get("backend") == "sarima":
+            # Prod is SARIMA — recompute its RMSE by refitting with saved order
+            sarima_order_path = f"{models_dir}/sarima_order.json"
+            if os.path.exists(sarima_order_path):
+                from sarima_model import fit_sarima, predict_sarima_n_ahead_rolling
+                with open(sarima_order_path) as f:
+                    so = json.load(f)
+                pm25_raw_train = pd.read_parquet(f"{base}/pm25_raw_train.parquet")["pm25"].values
+                pm25_raw_test  = pd.read_parquet(f"{base}/pm25_raw_test.parquet")["pm25"].values
+                prod_model  = fit_sarima(tuple(so["order"]), tuple(so["seasonal_order"]), pm25_raw_train)
+                preds_prod  = predict_sarima_n_ahead_rolling(prod_model, pm25_raw_test, FORECAST_HOUR)
                 prod_metrics = evaluate_model(y_test, preds_prod)
                 prod_rmse = prod_metrics["RMSE"]
-                prod_mae = prod_metrics["MAE"]
+                prod_mae  = prod_metrics["MAE"]
+        else:
+            # Prod is ONNX
+            onnx_prod = f"{models_dir}/onnx/{old_info.get('onnx_file', '')}"
+            if os.path.exists(onnx_prod):
+                X_in       = X_3d if old_info.get("input_shape") == "3d" else X_f
+                preds_prod = _onnx_predict(onnx_prod, X_in)
+                if preds_prod.shape[0] != y_test.shape[0]:
+                    print("  Prod model incompatible shape — treating as first deploy")
+                    old_info = None
+                else:
+                    prod_metrics = evaluate_model(y_test, preds_prod)
+                    prod_rmse = prod_metrics["RMSE"]
+                    prod_mae  = prod_metrics["MAE"]
 
     prod_str = (f"RMSE={prod_rmse:.4f}  MAE={prod_mae:.4f}  ({old_info['train_start']} → {old_info['train_end']})"
                 if prod_rmse is not None else "N/A (first deploy)")
     print(f"  Prod: {prod_str}")
 
     if prod_rmse is None or new_rmse < prod_rmse:
-        onnx_filename = f"{best_key}_{train_start}_{train_end}.onnx"
-        onnx_dest     = f"{models_dir}/onnx/{onnx_filename}"
-        shutil.copy2(_tmp_onnx(station_id, best_key), onnx_dest)
-
-        info = {
-            "onnx_file":     onnx_filename,
-            "model_key":     best_key,
-            "station_id":    station_id,
-            "train_start":   train_start,
-            "train_end":     train_end,
-            "backend":       "onnx",
-            "input_shape":   "3d" if best_is_lstm else "2d",
-            "forecast_hour": FORECAST_HOUR,
-            "n_features":    n,
-        }
-        with open(registry, "w") as f:
-            json.dump(info, f, indent=2)
-        with open(f"{models_dir}/feature_columns.json", "w") as f:
-            json.dump(meta["feature_cols"], f)
-
-        status = "DEPLOYED"
         delta_rmse = round(prod_rmse - new_rmse, 4) if prod_rmse is not None else None
-        delta_mae = round(prod_mae - new_mae, 4) if prod_mae is not None else None
-        print(f"  → DEPLOYED  {onnx_dest}")
+        delta_mae  = round(prod_mae  - new_mae,  4) if prod_mae  is not None else None
+        status = "DEPLOYED"
 
-        # Publish to Triton
-        try:
-            _publish_to_triton(
-                onnx_path=onnx_dest,
-                station_id=station_id,
-                n_features=n,
-                triton_repo="/app/triton_model_repo"
-            )
-        except Exception as e:
-            print(f"  ⚠ Triton publish failed (model still deployed to models/): {e}")
+        if sarima_wins:
+            # SARIMA deployment — no ONNX file, no Triton publish
+            with open(f"{models_dir}/sarima_order.json", "w") as f:
+                json.dump({"order": sarima_candidate["order"],
+                           "seasonal_order": sarima_candidate["seasonal_order"]}, f)
+            info = {
+                "model_key":     "sarima",
+                "station_id":    station_id,
+                "train_start":   train_start,
+                "train_end":     train_end,
+                "backend":       "sarima",
+                "forecast_hour": FORECAST_HOUR,
+            }
+            with open(registry, "w") as f:
+                json.dump(info, f, indent=2)
+            with open(f"{models_dir}/feature_columns.json", "w") as f:
+                json.dump(meta["feature_cols"], f)
+            print(f"  → DEPLOYED (SARIMA — no Triton publish)")
+        else:
+            # ONNX deployment
+            onnx_filename = f"{best_key}_{train_start}_{train_end}.onnx"
+            onnx_dest     = f"{models_dir}/onnx/{onnx_filename}"
+            shutil.copy2(_tmp_onnx(station_id, best_key), onnx_dest)
+            info = {
+                "onnx_file":     onnx_filename,
+                "model_key":     best_key,
+                "station_id":    station_id,
+                "train_start":   train_start,
+                "train_end":     train_end,
+                "backend":       "onnx",
+                "input_shape":   "3d" if best_is_lstm else "2d",
+                "forecast_hour": FORECAST_HOUR,
+                "n_features":    n,
+            }
+            with open(registry, "w") as f:
+                json.dump(info, f, indent=2)
+            with open(f"{models_dir}/feature_columns.json", "w") as f:
+                json.dump(meta["feature_cols"], f)
+            print(f"  → DEPLOYED  {onnx_dest}")
+            try:
+                _publish_to_triton(
+                    onnx_path=onnx_dest,
+                    station_id=station_id,
+                    n_features=n,
+                    triton_repo="/app/triton_model_repo"
+                )
+            except Exception as e:
+                print(f"  ⚠ Triton publish failed (model still deployed to models/): {e}")
     else:
         status = "NOT_DEPLOYED"
         delta_rmse = round(prod_rmse - new_rmse, 4)
-        delta_mae = round(prod_mae - new_mae, 4)
+        delta_mae  = round(prod_mae  - new_mae,  4)
         print(f"  → NOT DEPLOYED  new RMSE {new_rmse:.4f} >= prod {prod_rmse:.4f}")
 
-    # Clean up temp ONNX files
+    # Clean up temp ONNX files and SARIMA result JSON
     for key in tmp_keys:
         p = _tmp_onnx(station_id, key)
         if os.path.exists(p):
             os.remove(p)
+    if os.path.exists(sarima_tmp_path):
+        os.remove(sarima_tmp_path)
 
     # Append to report
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -722,15 +836,16 @@ with DAG(
     tags=["pm25", "ml", "24h-forecast", "postgresql"],
 ) as dag:
 
-    feat_task  = PythonOperator(task_id="feature_engineering",  python_callable=_feature_engineering)
-    linear_task= PythonOperator(task_id="train_linear",         python_callable=_train_linear)
-    ridge_task = PythonOperator(task_id="train_ridge",          python_callable=_train_ridge)
-    rf_task    = PythonOperator(task_id="train_random_forest",  python_callable=_train_random_forest)
-    xgb_task   = PythonOperator(task_id="train_xgboost",        python_callable=_train_xgboost)
-    lstm_task  = PythonOperator(task_id="train_lstm",           python_callable=_train_lstm)
-    eval_task  = PythonOperator(task_id="evaluate",             python_callable=_evaluate)
-    deploy_task= PythonOperator(task_id="compare_and_deploy",   python_callable=_compare_and_deploy)
+    feat_task   = PythonOperator(task_id="feature_engineering",  python_callable=_feature_engineering)
+    linear_task = PythonOperator(task_id="train_linear",         python_callable=_train_linear)
+    ridge_task  = PythonOperator(task_id="train_ridge",          python_callable=_train_ridge)
+    rf_task     = PythonOperator(task_id="train_random_forest",  python_callable=_train_random_forest)
+    xgb_task    = PythonOperator(task_id="train_xgboost",        python_callable=_train_xgboost)
+    lstm_task   = PythonOperator(task_id="train_lstm",           python_callable=_train_lstm)
+    sarima_task = PythonOperator(task_id="train_sarima_24h",     python_callable=_train_sarima_24h)
+    eval_task   = PythonOperator(task_id="evaluate",             python_callable=_evaluate)
+    deploy_task = PythonOperator(task_id="compare_and_deploy",   python_callable=_compare_and_deploy)
 
-    feat_task >> [linear_task, ridge_task, rf_task, xgb_task, lstm_task]
-    [linear_task, ridge_task, rf_task, xgb_task, lstm_task] >> eval_task
+    feat_task >> [linear_task, ridge_task, rf_task, xgb_task, lstm_task, sarima_task]
+    [linear_task, ridge_task, rf_task, xgb_task, lstm_task, sarima_task] >> eval_task
     eval_task >> deploy_task

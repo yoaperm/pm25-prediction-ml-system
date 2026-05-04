@@ -22,7 +22,7 @@ from preprocessing import preprocess_pipeline
 from feature_engineering import build_features, get_feature_columns
 from evaluate import evaluate_model, print_metrics
 from lstm_model import train_lstm_with_tuning
-from sarima_model import train_sarima_with_tuning, predict_sarima_rolling
+from sarima_model import train_sarima_with_tuning, predict_sarima_rolling, fit_sarima
 
 
 def get_model(name: str, params: dict = None):
@@ -97,12 +97,12 @@ def _setup_mlflow(config: dict):
     print(f"MLflow tracking URI: {tracking_uri}")
 
 
-def _load_active_model(models_dir: str, X_test, y_test):
+def _load_active_model(models_dir: str, X_test, y_test, y_train=None):
     """
-    Load the currently deployed production model via ONNX Runtime and return (None, mae, active_info).
-    Reads models/active_model.json to find the current ONNX file.
-    Returns (None, None, None) if no production model exists yet or if active model is SARIMA
-    (SARIMA has no ONNX file and cannot be compared via this path).
+    Load the currently deployed production model and return (None, mae, active_info).
+    For ONNX models: runs inference on X_test.
+    For SARIMA: refits saved order on y_train then rolls over y_test to get MAE.
+    Returns (None, None, None) if no production model exists or y_train is missing for SARIMA.
     """
     import onnxruntime as rt
 
@@ -114,7 +114,17 @@ def _load_active_model(models_dir: str, X_test, y_test):
         info = json.load(f)
 
     if info.get("backend") == "sarima":
-        return None, None, None
+        if y_train is None:
+            return None, None, None
+        sarima_path = os.path.join(models_dir, "sarima_order.json")
+        if not os.path.exists(sarima_path):
+            return None, None, None
+        with open(sarima_path) as f:
+            so = json.load(f)
+        model = fit_sarima(tuple(so["order"]), tuple(so["seasonal_order"]), y_train)
+        preds = predict_sarima_rolling(model, y_train, y_test)
+        mae = evaluate_model(y_test, preds)["MAE"]
+        return None, mae, info
 
     onnx_path = os.path.join(models_dir, "onnx", info["onnx_file"])
     if not os.path.exists(onnx_path):
@@ -349,7 +359,7 @@ def train_all_models(config: dict):
     print(f"\nBest new model: {best_name}  MAE={best_metrics['MAE']:.4f}")
 
     # ---- Compare best new vs current production ----
-    prod_model, prod_mae, active_info = _load_active_model(models_dir, X_test, y_test)
+    prod_model, prod_mae, active_info = _load_active_model(models_dir, X_test, y_test, y_train)
     new_mae = best_metrics["MAE"]
 
     print(f"\n{'=' * 60}")

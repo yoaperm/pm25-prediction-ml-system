@@ -334,7 +334,8 @@ def _prepare_prediction_jobs(**context):
     }
 
 
-def _load_hourly_for_station(station_id: int, target_date: date, db_url: str):
+def _load_hourly_for_station(station_id: int, target_date: date, db_url: str,
+                             lookback_days: int = 4):
     import pandas as pd
     import sqlalchemy
 
@@ -352,13 +353,31 @@ def _load_hourly_for_station(station_id: int, target_date: date, db_url: str):
         with engine.connect() as conn:
             result = conn.execute(query, {
                 "sid": station_id,
-                "start_date": (target_date - timedelta(days=4)).isoformat(),
+                "start_date": (target_date - timedelta(days=lookback_days)).isoformat(),
                 "target_date": target_date.isoformat(),
             })
             df = pd.DataFrame(result.fetchall(), columns=result.keys())
     finally:
         engine.dispose()
     return df.sort_values("ts").reset_index(drop=True)
+
+
+def _sarima_predict_for_station(station_id: int, target_date: date, db_url: str) -> float:
+    """Refit SARIMA with saved order on 90-day history and predict 24h ahead."""
+    import sys; sys.path.insert(0, SRC)
+    from sarima_model import fit_sarima
+
+    sarima_order_path = os.path.join(MODELS_BASE, f"station_{station_id}_24h", "sarima_order.json")
+    with open(sarima_order_path) as f:
+        so = json.load(f)
+
+    hourly = _load_hourly_for_station(station_id, target_date, db_url, lookback_days=90)
+    if hourly.empty or len(hourly) < 48:
+        raise ValueError(f"Insufficient history for SARIMA station {station_id}: {len(hourly)} rows")
+
+    pm25_series = hourly["pm25"].ffill().bfill().clip(lower=0, upper=500).values
+    model = fit_sarima(tuple(so["order"]), tuple(so["seasonal_order"]), pm25_series)
+    return float(model.predict(24)[-1])
 
 
 def _build_hourly_features(df, feature_cols: list):
@@ -409,47 +428,60 @@ def _call_triton_prediction(**context):
         ti.xcom_push(key="prediction_rows", value=[])
         return {"prediction_rows": 0}
 
+    # Cache active_model.json per station to avoid re-reading on every job
+    station_backend = {}
+    for sid in {job["source_station_id"] for job in jobs}:
+        info_path = os.path.join(MODELS_BASE, f"station_{sid}_24h", "active_model.json")
+        if os.path.exists(info_path):
+            with open(info_path) as f:
+                station_backend[sid] = json.load(f)
+
     prediction_rows = []
 
     for job in jobs:
         station_id = job["source_station_id"]
         target_date = _parse_date_value(job["target_date"])
+        model_info  = station_backend.get(station_id, {})
 
         try:
-            feature_cols = _get_station_feature_cols(station_id)
-            hourly_df = _load_hourly_for_station(station_id, target_date, db_url)
+            if model_info.get("backend") == "sarima":
+                prediction = round(_sarima_predict_for_station(station_id, target_date, db_url), 2)
+                logger.info("[sarima] station %s target=%s pred=%.2f", station_id, target_date, prediction)
+            else:
+                feature_cols = _get_station_feature_cols(station_id)
+                hourly_df = _load_hourly_for_station(station_id, target_date, db_url)
 
-            if hourly_df.empty:
-                logger.warning("[triton] No hourly data for station %s target=%s", station_id, target_date)
-                continue
+                if hourly_df.empty:
+                    logger.warning("[triton] No hourly data for station %s target=%s", station_id, target_date)
+                    continue
 
-            feat_df = _build_hourly_features(hourly_df, feature_cols)
-            if feat_df.empty:
-                logger.warning("[triton] No valid features for station %s target=%s", station_id, target_date)
-                continue
+                feat_df = _build_hourly_features(hourly_df, feature_cols)
+                if feat_df.empty:
+                    logger.warning("[triton] No valid features for station %s target=%s", station_id, target_date)
+                    continue
 
-            X = feat_df.iloc[-1][feature_cols].values.astype(np.float32)
+                X = feat_df.iloc[-1][feature_cols].values.astype(np.float32)
 
-            payload = json.dumps({
-                "inputs": [{
-                    "name": "float_input",
-                    "shape": [1, len(feature_cols)],
-                    "datatype": "FP32",
-                    "data": X.tolist(),
-                }]
-            }).encode("utf-8")
+                payload = json.dumps({
+                    "inputs": [{
+                        "name": "float_input",
+                        "shape": [1, len(feature_cols)],
+                        "datatype": "FP32",
+                        "data": X.tolist(),
+                    }]
+                }).encode("utf-8")
 
-            triton_request = request.Request(
-                f"{triton_url}/v2/models/pm25_{station_id}/infer",
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
+                triton_request = request.Request(
+                    f"{triton_url}/v2/models/pm25_{station_id}/infer",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
 
-            with request.urlopen(triton_request, timeout=30) as resp:
-                resp_body = json.loads(resp.read().decode("utf-8"))
+                with request.urlopen(triton_request, timeout=30) as resp:
+                    resp_body = json.loads(resp.read().decode("utf-8"))
 
-            prediction = round(float(resp_body["outputs"][0]["data"][0]), 2)
+                prediction = round(float(resp_body["outputs"][0]["data"][0]), 2)
 
         except error.HTTPError as exc:
             logger.error("[triton] station %s HTTP %s: %s", station_id, exc.code, exc.read().decode())

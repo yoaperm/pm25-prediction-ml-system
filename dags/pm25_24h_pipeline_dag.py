@@ -144,6 +144,43 @@ def _compute_psi(predicted, actual, bins=10):
     return round(float(np.sum((act_pct - exp_pct) * np.log(act_pct / exp_pct))), 4)
 
 
+def _query_stored_predictions(station_id, db_url, rolling_days):
+    """Query pm25_api_daily_predictions joined with actuals for recent days.
+
+    Returns a DataFrame with (predicted_pm25, actual_pm25) columns,
+    or an empty DataFrame if the table doesn't exist or has no data.
+    """
+    import pandas as pd
+    import sqlalchemy
+    from sqlalchemy import text
+
+    engine = sqlalchemy.create_engine(db_url)
+    query = text("""
+        SELECT
+            p.prediction_date,
+            p.predicted_pm25,
+            AVG(r.pm25) AS actual_pm25
+        FROM pm25_api_daily_predictions p
+        JOIN pm25_raw_hourly r
+          ON r.station_id    = p.source_station_id
+         AND DATE(r.timestamp) = p.prediction_date
+        WHERE p.source_station_id = :station_id
+          AND p.prediction_date  >= CURRENT_DATE - :rolling_days
+          AND r.pm25             IS NOT NULL
+        GROUP BY p.prediction_date, p.predicted_pm25
+        ORDER BY p.prediction_date
+    """)
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(query, {"station_id": station_id, "rolling_days": rolling_days})
+            df = pd.DataFrame(result.fetchall(), columns=result.keys())
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        engine.dispose()
+    return df
+
+
 # ── Per-station health check ──────────────────────────────────────────────────
 def _check_station_health(station_id, **context):
     import json
@@ -174,6 +211,130 @@ def _check_station_health(station_id, **context):
 
     with open(registry) as f:
         model_info = json.load(f)
+
+    if model_info.get("backend") == "sarima":
+        import numpy as np
+        import pandas as pd
+
+        # ── Fast path: use stored predictions from prediction DAG ──
+        MIN_DAILY_PAIRS = 7
+        stored = _query_stored_predictions(station_id, db_url, ROLLING_DAYS)
+        if len(stored) >= MIN_DAILY_PAIRS:
+            y_pred   = stored["predicted_pm25"].values.astype(float)
+            y_actual = stored["actual_pm25"].values.astype(float)
+            rmse = round(float(np.sqrt(np.mean((y_actual - y_pred) ** 2))), 4)
+            mae  = round(float(np.mean(np.abs(y_actual - y_pred))), 4)
+            psi  = _compute_psi(y_pred, y_actual)
+
+            rmse_degraded = rmse > rmse_thresh
+            psi_degraded  = psi > psi_thresh
+            needs_retrain = rmse_degraded or psi_degraded
+            rmse_status = "DEGRADED" if rmse_degraded else "OK"
+            psi_label   = "stable" if psi < 0.1 else ("moderate" if psi < 0.2 else "significant")
+            psi_status  = "DEGRADED" if psi_degraded else "OK"
+            print(f"  [fast-path] {len(stored)} stored daily predictions")
+            print(f"  RMSE={rmse:.4f}  threshold={rmse_thresh}  [{rmse_status}]")
+            print(f"  MAE={mae:.4f}  PSI={psi:.4f}  threshold={psi_thresh}  [{psi_status}]")
+            print(f"  needs_retraining={needs_retrain}")
+
+            result = {
+                "station_id": station_id, "status": "degraded" if needs_retrain else "healthy",
+                "needs_retraining": needs_retrain, "rmse": rmse, "rmse_threshold": rmse_thresh,
+                "rmse_degraded": rmse_degraded, "mae": mae, "psi": psi,
+                "psi_threshold": psi_thresh, "psi_status": psi_label, "psi_degraded": psi_degraded,
+                "evaluated_pairs": len(stored), "model_key": "sarima",
+                "train_end": model_info.get("train_end"),
+                "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            }
+            os.makedirs(RESULTS_DIR, exist_ok=True)
+            report_path = f"{RESULTS_DIR}/monitoring_24h_results.csv"
+            exists = os.path.exists(report_path)
+            pd.DataFrame([result]).to_csv(report_path, mode="a", header=not exists, index=False)
+            ti.xcom_push(key=f"health_{station_id}", value=result)
+            return
+
+        print(f"  [fast-path] Only {len(stored)} stored predictions — falling back to re-fit")
+
+        # ── Slow path: re-fit SARIMA on recent data ──
+        import sys; sys.path.insert(0, SRC)
+        from sarima_model import fit_sarima, predict_sarima_n_ahead_rolling
+
+        sarima_order_path = f"{models_dir}/sarima_order.json"
+        if not os.path.exists(sarima_order_path):
+            print(f"  [SKIP] sarima_order.json missing for station {station_id}")
+            ti.xcom_push(key=f"health_{station_id}", value={
+                "station_id": station_id, "status": "missing_sarima_order",
+                "needs_retraining": True, "rmse": None, "mae": None, "psi": None,
+            })
+            return
+
+        with open(sarima_order_path) as f:
+            so = json.load(f)
+
+        SARIMA_WARMUP_DAYS = 60
+        sarima_start = (datetime.utcnow() - timedelta(
+            days=ROLLING_DAYS + SARIMA_WARMUP_DAYS + 5)).strftime("%Y-%m-%d")
+        hourly_full = _load_hourly_from_pg(station_id, db_url, sarima_start)
+
+        if hourly_full.empty or len(hourly_full) < MIN_PAIRS + FORECAST_HOUR:
+            print(f"  [SKIP] Not enough data for SARIMA warm-up: {len(hourly_full)} rows")
+            ti.xcom_push(key=f"health_{station_id}", value={
+                "station_id": station_id, "status": "insufficient_data",
+                "needs_retraining": False, "rmse": None, "mae": None, "psi": None,
+            })
+            return
+
+        feat_full, feature_cols, target_col = _build_features_24h(hourly_full)
+        cutoff    = feat_full["datetime"].max() - pd.Timedelta(days=ROLLING_DAYS)
+        warmup_df = feat_full[feat_full["datetime"] <  cutoff]
+        window_df = feat_full[feat_full["datetime"] >= cutoff].reset_index(drop=True)
+
+        if len(window_df) < MIN_PAIRS:
+            print(f"  [SKIP] Rolling window too small: {len(window_df)} rows")
+            ti.xcom_push(key=f"health_{station_id}", value={
+                "station_id": station_id, "status": "insufficient_window",
+                "needs_retraining": False, "rmse": None, "mae": None, "psi": None,
+            })
+            return
+
+        y_actual    = window_df[target_col].values
+        pm25_warmup = warmup_df["pm25"].values
+        pm25_window = window_df["pm25"].values
+
+        sarima_model = fit_sarima(tuple(so["order"]), tuple(so["seasonal_order"]), pm25_warmup)
+        y_pred       = predict_sarima_n_ahead_rolling(sarima_model, pm25_window, n_ahead=FORECAST_HOUR)
+
+        rmse = round(float(np.sqrt(np.mean((y_actual - y_pred) ** 2))), 4)
+        mae  = round(float(np.mean(np.abs(y_actual - y_pred))), 4)
+        psi  = _compute_psi(y_pred, y_actual)
+
+        rmse_degraded = rmse > rmse_thresh
+        psi_degraded  = psi > psi_thresh
+        needs_retrain = rmse_degraded or psi_degraded
+
+        rmse_status = "DEGRADED" if rmse_degraded else "OK"
+        psi_label   = "stable" if psi < 0.1 else ("moderate" if psi < 0.2 else "significant")
+        psi_status  = "DEGRADED" if psi_degraded else "OK"
+        print(f"  RMSE={rmse:.4f}  threshold={rmse_thresh}  [{rmse_status}]")
+        print(f"  MAE={mae:.4f}  (secondary metric)")
+        print(f"  PSI={psi:.4f}  threshold={psi_thresh}  status={psi_label}  [{psi_status}]")
+        print(f"  Pairs={len(window_df)}  needs_retraining={needs_retrain}")
+
+        result = {
+            "station_id": station_id, "status": "degraded" if needs_retrain else "healthy",
+            "needs_retraining": needs_retrain, "rmse": rmse, "rmse_threshold": rmse_thresh,
+            "rmse_degraded": rmse_degraded, "mae": mae, "psi": psi,
+            "psi_threshold": psi_thresh, "psi_status": psi_label, "psi_degraded": psi_degraded,
+            "evaluated_pairs": len(window_df), "model_key": "sarima",
+            "train_end": model_info.get("train_end"),
+            "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+        }
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        report_path = f"{RESULTS_DIR}/monitoring_24h_results.csv"
+        exists = os.path.exists(report_path)
+        pd.DataFrame([result]).to_csv(report_path, mode="a", header=not exists, index=False)
+        ti.xcom_push(key=f"health_{station_id}", value=result)
+        return
 
     onnx_path = f"{models_dir}/onnx/{model_info['onnx_file']}"
     if not os.path.exists(onnx_path):

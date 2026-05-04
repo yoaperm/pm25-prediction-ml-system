@@ -258,9 +258,44 @@ def _train_lstm(**context):
                      output_path=f"{MODELS_DIR}/_tmp_lstm.onnx")
 
 
+# ── Task 2f: SARIMA ──────────────────────────────────────────────────────────
+def _train_sarima(**context):
+    import sys, os, json, mlflow
+    sys.path.insert(0, SRC)
+    from data_loader import load_config
+    from sarima_model import train_sarima_with_tuning, predict_sarima_rolling
+    from evaluate import evaluate_model, print_metrics
+
+    config = load_config(CONFIG_PATH)
+    _setup_mlflow(config)
+    _, y_train, _, y_test, _ = _load_arrays()
+
+    sarima_cfg = config.get("models", {}).get("sarima", {})
+    seasonal_period = sarima_cfg.get("seasonal_period", 7)
+
+    with mlflow.start_run(run_name="SARIMA"):
+        model, sarima_best = train_sarima_with_tuning(y_train, seasonal_period)
+        preds = predict_sarima_rolling(model, y_train, y_test)
+        metrics = evaluate_model(y_test, preds)
+        print_metrics("SARIMA", metrics)
+        mlflow.log_params(sarima_best)
+        mlflow.log_metrics(metrics)
+
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    tmp_result = {
+        "order": list(model.order),
+        "seasonal_order": list(model.seasonal_order),
+        "mae": metrics["MAE"],
+        "rmse": metrics["RMSE"],
+        "r2": metrics["R2"],
+    }
+    with open(f"{MODELS_DIR}/_tmp_sarima_result.json", "w") as f:
+        json.dump(tmp_result, f, indent=2)
+
+
 # ── Task 3: Evaluate all temp ONNX models ────────────────────────────────────
 def _evaluate(**context):
-    import sys, os
+    import sys, os, json
     import numpy as np
     import pandas as pd
     sys.path.insert(0, SRC)
@@ -289,6 +324,12 @@ def _evaluate(**context):
         print_metrics(name, metrics)
         results.append({"model": name, **metrics})
 
+    sarima_tmp = f"{MODELS_DIR}/_tmp_sarima_result.json"
+    if os.path.exists(sarima_tmp):
+        with open(sarima_tmp) as f:
+            sr = json.load(f)
+        results.append({"model": "SARIMA", "MAE": sr["mae"], "RMSE": sr["rmse"], "R2": sr["r2"]})
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
     df = pd.DataFrame(results)
     df.to_csv(f"{RESULTS_DIR}/experiment_results.csv", index=False)
@@ -310,7 +351,7 @@ def _compare_and_deploy(**context):
     from train import _load_active_model
     from triton_utils import publish_to_triton
 
-    _, _, X_test, y_test, _ = _load_arrays()
+    _, y_train, X_test, y_test, _ = _load_arrays()
     X_test_f  = X_test.astype("float32")
     X_test_3d = X_test.reshape(X_test.shape[0], 1, X_test.shape[1]).astype("float32")
 
@@ -337,11 +378,22 @@ def _compare_and_deploy(**context):
         mae   = evaluate_model(y_test, preds)["MAE"]
         trained[key] = (name, mae, is_lstm)
 
-    best_key           = min(trained, key=lambda k: trained[k][1])
-    best_name, new_mae, best_is_lstm = trained[best_key]
+    best_key                      = min(trained, key=lambda k: trained[k][1])
+    best_name, best_onnx_mae, best_is_lstm = trained[best_key]
+
+    # Include SARIMA in the competition if it ran this cycle
+    sarima_result = None
+    sarima_tmp    = f"{MODELS_DIR}/_tmp_sarima_result.json"
+    if os.path.exists(sarima_tmp):
+        with open(sarima_tmp) as f:
+            sarima_result = json.load(f)
+
+    sarima_wins = sarima_result is not None and sarima_result["mae"] < best_onnx_mae
+    best_name = "SARIMA" if sarima_wins else best_name
+    new_mae   = sarima_result["mae"] if sarima_wins else best_onnx_mae
     print(f"Best new model: {best_name}  MAE={new_mae:.4f}")
 
-    _, prod_mae, active_info = _load_active_model(MODELS_DIR, X_test, y_test)
+    _, prod_mae, active_info = _load_active_model(MODELS_DIR, X_test, y_test, y_train)
 
     print("\n" + "=" * 60)
     print("DEPLOYMENT DECISION")
@@ -354,39 +406,61 @@ def _compare_and_deploy(**context):
     print(f"  Prod : {prod_str}")
 
     if prod_mae is None or new_mae < prod_mae:
-        os.makedirs(ONNX_DIR, exist_ok=True)
-        onnx_filename = f"{best_key}_{train_start}_{train_end}.onnx"
-        onnx_dest     = os.path.join(ONNX_DIR, onnx_filename)
-        shutil.copy2(f"{MODELS_DIR}/_tmp_{best_key}.onnx", onnx_dest)
+        if sarima_wins:
+            sarima_order = {
+                "order":          sarima_result["order"],
+                "seasonal_order": sarima_result["seasonal_order"],
+            }
+            with open(f"{MODELS_DIR}/sarima_order.json", "w") as f:
+                json.dump(sarima_order, f, indent=2)
+            info = {
+                "model_key":   "sarima",
+                "backend":     "sarima",
+                "onnx_file":   None,
+                "input_shape": "2d",
+                "train_start": train_start,
+                "train_end":   train_end,
+                **sarima_order,
+            }
+            with open(f"{MODELS_DIR}/active_model.json", "w") as f:
+                json.dump(info, f, indent=2)
+            print(f"  → SARIMA DEPLOYED  MAE={new_mae:.4f}")
+        else:
+            os.makedirs(ONNX_DIR, exist_ok=True)
+            onnx_filename = f"{best_key}_{train_start}_{train_end}.onnx"
+            onnx_dest     = os.path.join(ONNX_DIR, onnx_filename)
+            shutil.copy2(f"{MODELS_DIR}/_tmp_{best_key}.onnx", onnx_dest)
 
-        info = {
-            "onnx_file":   onnx_filename,
-            "model_key":   best_key,
-            "train_start": train_start,
-            "train_end":   train_end,
-            "backend":     "onnx",
-            "input_shape": "3d" if best_is_lstm else "2d",
-        }
-        with open(f"{MODELS_DIR}/active_model.json", "w") as f:
-            json.dump(info, f, indent=2)
+            info = {
+                "onnx_file":   onnx_filename,
+                "model_key":   best_key,
+                "train_start": train_start,
+                "train_end":   train_end,
+                "backend":     "onnx",
+                "input_shape": "3d" if best_is_lstm else "2d",
+            }
+            with open(f"{MODELS_DIR}/active_model.json", "w") as f:
+                json.dump(info, f, indent=2)
 
-        triton_repo = "/app/triton_model_repo"
-        os.makedirs(triton_repo, exist_ok=True)
-        publish_to_triton(onnx_dest, triton_repo, best_is_lstm)
+            triton_repo = "/app/triton_model_repo"
+            os.makedirs(triton_repo, exist_ok=True)
+            publish_to_triton(onnx_dest, triton_repo, best_is_lstm)
+            print(f"  → DEPLOYED  {onnx_dest}")
 
         status = "DEPLOYED"
         delta  = round(prod_mae - new_mae, 4) if prod_mae is not None else None
-        print(f"  → DEPLOYED  {onnx_dest}")
     else:
         status = "NOT_DEPLOYED"
         delta  = round(prod_mae - new_mae, 4)
         print(f"  → NOT DEPLOYED  new MAE {new_mae:.4f} >= production MAE {prod_mae:.4f}")
 
-    # Delete all temp ONNX files
+    # Delete all temp files
     for key in tmp_keys:
         p = f"{MODELS_DIR}/_tmp_{key}.onnx"
         if os.path.exists(p):
             os.remove(p)
+    if os.path.exists(sarima_tmp):
+        os.remove(sarima_tmp)
     print("  Temp files cleaned up.")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -420,9 +494,10 @@ with DAG(
     rf_task       = PythonOperator(task_id="train_random_forest",  python_callable=_train_random_forest)
     xgb_task      = PythonOperator(task_id="train_xgboost",        python_callable=_train_xgboost)
     lstm_task     = PythonOperator(task_id="train_lstm",           python_callable=_train_lstm)
+    sarima_task   = PythonOperator(task_id="train_sarima",         python_callable=_train_sarima)
     eval_task     = PythonOperator(task_id="evaluate",             python_callable=_evaluate)
     deploy_task   = PythonOperator(task_id="compare_and_deploy",   python_callable=_compare_and_deploy)
 
-    feat_task >> [baseline_task, ridge_task, rf_task, xgb_task, lstm_task]
-    [baseline_task, ridge_task, rf_task, xgb_task, lstm_task] >> eval_task
+    feat_task >> [baseline_task, ridge_task, rf_task, xgb_task, lstm_task, sarima_task]
+    [baseline_task, ridge_task, rf_task, xgb_task, lstm_task, sarima_task] >> eval_task
     eval_task >> deploy_task
