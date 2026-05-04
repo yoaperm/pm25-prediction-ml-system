@@ -17,6 +17,7 @@ from urllib import error, request
 
 import pendulum
 from airflow import DAG
+from airflow.models.param import Param
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
 
@@ -181,13 +182,15 @@ def _prepare_prediction_jobs(**context):
     db_url = os.environ.get("PM25_DB_URL", DEFAULT_DB_URL)
     jobs = []
     skipped = []
-    is_first_run = not _prediction_table_has_rows(db_url)
+    force_backfill = bool(context["params"].get("force_backfill", False))
+    has_prediction_rows = _prediction_table_has_rows(db_url)
+    should_backfill = force_backfill or not has_prediction_rows
 
     for station_id in STATION_IDS:
         try:
             info = _get_model_info(station_id)
 
-            if is_first_run:
+            if should_backfill:
                 min_ts, max_ts = _load_hourly_bounds_for_station(station_id, db_url)
                 if min_ts is None:
                     skipped.append({"station_id": station_id, "reason": "no_hourly_data"})
@@ -196,7 +199,7 @@ def _prepare_prediction_jobs(**context):
                 if not anchors:
                     skipped.append({"station_id": station_id, "reason": "insufficient_backfill_range"})
                     continue
-                run_type = "initial_backfill"
+                run_type = "manual_backfill" if force_backfill and has_prediction_rows else "initial_backfill"
             else:
                 hourly_df = _load_latest_hourly_for_station(station_id, db_url)
                 if hourly_df.empty or len(hourly_df) < MIN_HISTORY_HOURS:
@@ -226,17 +229,20 @@ def _prepare_prediction_jobs(**context):
     ti = context["ti"]
     ti.xcom_push(key="prediction_jobs", value=jobs)
     ti.xcom_push(key="skipped_stations", value=skipped)
-    ti.xcom_push(key="is_first_run", value=is_first_run)
+    ti.xcom_push(key="should_backfill", value=should_backfill)
+    ti.xcom_push(key="force_backfill", value=force_backfill)
     logger.info(
-        "[prepare] Prepared %s 24-hour hourly jobs; first_run=%s skipped=%s",
+        "[prepare] Prepared %s 24-hour hourly jobs; backfill=%s force_backfill=%s skipped=%s",
         len(jobs),
-        is_first_run,
+        should_backfill,
+        force_backfill,
         len(skipped),
     )
     return {
         "prediction_jobs": len(jobs),
-        "first_run": is_first_run,
-        "backfill_days": BACKFILL_DAYS if is_first_run else None,
+        "backfill": should_backfill,
+        "force_backfill": force_backfill,
+        "backfill_days": BACKFILL_DAYS if should_backfill else None,
         "skipped_stations": skipped,
     }
 
@@ -380,10 +386,17 @@ def _store_predictions(**context):
 with DAG(
     dag_id="pm25_24h_hourly_prediction",
     description="Generate hourly PM2.5 predictions for the next 24 hours via Triton",
-    schedule="20 0 * * *",
+    schedule="0 2 * * *",
     start_date=pendulum.datetime(2026, 4, 15, tz=BANGKOK_TIMEZONE_NAME),
     catchup=False,
     max_active_runs=1,
+    params={
+        "force_backfill": Param(
+            False,
+            type="boolean",
+            description="When true, run the 365-day hourly prediction backfill even if pm25_predicted_hourly already has rows.",
+        ),
+    },
     tags=["pm25", "prediction", "24h-hourly-forecast", "postgresql"],
     default_args={
         "owner": "data-team",
