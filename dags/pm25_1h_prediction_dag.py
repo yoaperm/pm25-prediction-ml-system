@@ -1,7 +1,7 @@
 """
 PM2.5 24-Hour Hourly Prediction DAG
 ===================================
-Daily DAG that calls a T+1h Triton model recursively to generate
+Daily DAG that loads the active T+1h ONNX model recursively to generate
 PM2.5 predictions for the next 24 hours, then stores the 24 forecast rows
 per station in PostgreSQL table pm25_predicted_hourly.
 """
@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import sys
-from urllib import error, request
 
 import pendulum
 from airflow import DAG
@@ -26,7 +25,6 @@ logger = logging.getLogger(__name__)
 SRC = "/app/src"
 BANGKOK_TIMEZONE_NAME = "Asia/Bangkok"
 BANGKOK_TZ = pendulum.timezone(BANGKOK_TIMEZONE_NAME)
-TRITON_URL = os.environ.get("TRITON_URL", "http://triton:8000")
 MODELS_BASE = os.environ.get("MODELS_DIR", "/app/models")
 DEFAULT_DB_URL = "postgresql://postgres:postgres@postgres:5432/pm25"
 DEFAULT_PREDICTION_TABLE = "pm25_predicted_hourly"
@@ -175,6 +173,9 @@ def _get_model_info(station_id: int) -> dict:
         info = json.load(f)
     with open(feature_cols_path) as f:
         info["feature_cols"] = json.load(f)
+    info["onnx_path"] = os.path.join(models_dir, "onnx", info["onnx_file"])
+    if not os.path.exists(info["onnx_path"]):
+        raise FileNotFoundError(f"active ONNX model not found: {info['onnx_path']}")
     return info
 
 
@@ -216,7 +217,8 @@ def _prepare_prediction_jobs(**context):
                     "input_shape": info.get("input_shape", "2d"),
                     "input_name": info.get("input_name", "lstm_input" if info.get("input_shape") == "3d" else "float_input"),
                     "output_name": info.get("output_name", "output" if info.get("input_shape") == "3d" else "variable"),
-                    "model_name": f"pm25_{station_id}_1h",
+                    "model_name": info.get("model_key", f"pm25_{station_id}_1h"),
+                    "onnx_path": info["onnx_path"],
                     "run_type": run_type,
                 })
         except Exception as exc:
@@ -247,42 +249,43 @@ def _prepare_prediction_jobs(**context):
     }
 
 
-def _infer_triton(job: dict, features: list[float], triton_url: str) -> float:
+def _load_onnx_session(job: dict):
+    import onnxruntime as rt
+
+    session = rt.InferenceSession(job["onnx_path"], providers=["CPUExecutionProvider"])
+    return {
+        "session": session,
+        "input_name": session.get_inputs()[0].name,
+        "output_name": session.get_outputs()[0].name,
+    }
+
+
+def _infer_onnx(job: dict, features: list[float], model_runtime: dict) -> float:
+    import numpy as np
+
     feature_count = len(job["feature_cols"])
-    shape = [1, 1, feature_count] if job["input_shape"] == "3d" else [1, feature_count]
-    payload = json.dumps({
-        "inputs": [{
-            "name": job["input_name"],
-            "shape": shape,
-            "datatype": "FP32",
-            "data": features,
-        }]
-    }).encode("utf-8")
-
-    triton_request = request.Request(
-        f"{triton_url}/v2/models/{job['model_name']}/infer",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    shape = (1, 1, feature_count) if job["input_shape"] == "3d" else (1, feature_count)
+    inputs = np.asarray(features, dtype=np.float32).reshape(shape)
+    outputs = model_runtime["session"].run(
+        [model_runtime["output_name"]],
+        {model_runtime["input_name"]: inputs},
     )
-
-    with request.urlopen(triton_request, timeout=30) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    return round(float(body["outputs"][0]["data"][0]), 2)
+    return round(float(outputs[0].flatten()[0]), 2)
 
 
-def _call_triton_prediction(**context):
+def _run_and_store_predictions(**context):
     sys.path.insert(0, SRC)
     import pandas as pd
+    from airflow_db import get_db_connection
     from hourly_forecast import build_next_hour_inference_features
 
     ti = context["ti"]
     jobs = ti.xcom_pull(task_ids="prepare_prediction_jobs", key="prediction_jobs") or []
-    triton_url = TRITON_URL.rstrip("/")
     generated_at = datetime.now(timezone.utc).isoformat()
     task_run_at = context["logical_date"].isoformat()
     db_url = os.environ.get("PM25_DB_URL", DEFAULT_DB_URL)
     records = []
+    runtime_cache = {}
 
     for job in jobs:
         history_df = _load_hourly_until_for_station(
@@ -304,6 +307,7 @@ def _call_triton_prediction(**context):
         filled_history_hours = int(history_df["pm25_observed"].isna().sum()) if "pm25_observed" in history_df else 0
 
         history_df = history_df[["datetime", "pm25"]].copy()
+        model_runtime = runtime_cache.setdefault(job["onnx_path"], _load_onnx_session(job))
         for horizon_hour in range(1, FORECAST_HOURS + 1):
             try:
                 feat_df = build_next_hour_inference_features(history_df, job["feature_cols"])
@@ -311,16 +315,13 @@ def _call_triton_prediction(**context):
                     logger.error("[features] %s horizon=%s produced no feature row", job["model_name"], horizon_hour)
                     break
 
-                prediction = _infer_triton(
+                prediction = _infer_onnx(
                     job=job,
                     features=feat_df.iloc[0].astype(float).tolist(),
-                    triton_url=triton_url,
+                    model_runtime=model_runtime,
                 )
-            except error.HTTPError as exc:
-                logger.error("[triton] %s HTTP %s: %s", job["model_name"], exc.code, exc.read().decode())
-                break
             except Exception as exc:
-                logger.error("[triton] %s horizon=%s failed: %s", job["model_name"], horizon_hour, exc)
+                logger.error("[onnx] %s horizon=%s failed: %s", job["model_name"], horizon_hour, exc)
                 break
 
             prediction_ts = history_df["datetime"].iloc[-1] + timedelta(hours=1)
@@ -350,23 +351,7 @@ def _call_triton_prediction(**context):
             )
 
     if not records:
-        raise ValueError("[triton] No 24-hour hourly predictions generated")
-
-    ti.xcom_push(key="prediction_records", value=records)
-    ti.xcom_push(key="prediction_rows", value=len(records))
-    logger.info("[triton] Generated %s hourly predictions from %s", len(records), triton_url)
-    return {"prediction_rows": len(records), "triton_url": triton_url}
-
-
-def _store_predictions(**context):
-    sys.path.insert(0, SRC)
-    import pandas as pd
-    from airflow_db import get_db_connection
-
-    ti = context["ti"]
-    records = ti.xcom_pull(task_ids="call_triton_prediction", key="prediction_records") or []
-    if not records:
-        return {"deleted": 0, "stored": 0}
+        raise ValueError("[onnx] No 24-hour hourly predictions generated")
 
     prediction_df = pd.DataFrame(records)
     stored_count = 0
@@ -379,13 +364,20 @@ def _store_predictions(**context):
     finally:
         db.close()
 
+    ti.xcom_push(key="prediction_rows", value=len(records))
+    ti.xcom_push(key="stored_rows", value=stored_count)
+    logger.info("[onnx] Generated %s hourly predictions", len(records))
     logger.info("[store] Stored %s rows in %s", stored_count, DEFAULT_PREDICTION_TABLE)
-    return {"deleted": 0, "stored": stored_count, "table_name": DEFAULT_PREDICTION_TABLE}
+    return {
+        "prediction_rows": len(records),
+        "stored": stored_count,
+        "table_name": DEFAULT_PREDICTION_TABLE,
+    }
 
 
 with DAG(
     dag_id="pm25_24h_hourly_prediction",
-    description="Generate hourly PM2.5 predictions for the next 24 hours via Triton",
+    description="Generate hourly PM2.5 predictions for the next 24 hours via local ONNX",
     schedule="0 2 * * *",
     start_date=pendulum.datetime(2026, 4, 15, tz=BANGKOK_TIMEZONE_NAME),
     catchup=False,
@@ -409,14 +401,10 @@ with DAG(
         task_id="prepare_prediction_jobs",
         python_callable=_prepare_prediction_jobs,
     )
-    call_triton_prediction = PythonOperator(
-        task_id="call_triton_prediction",
-        python_callable=_call_triton_prediction,
-    )
-    store_predictions = PythonOperator(
-        task_id="store_predictions",
-        python_callable=_store_predictions,
+    run_and_store_predictions = PythonOperator(
+        task_id="run_and_store_predictions",
+        python_callable=_run_and_store_predictions,
     )
     done = EmptyOperator(task_id="done")
 
-    start >> prepare_prediction_jobs >> call_triton_prediction >> store_predictions >> done
+    start >> prepare_prediction_jobs >> run_and_store_predictions >> done
