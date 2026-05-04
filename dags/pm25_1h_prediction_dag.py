@@ -1,7 +1,7 @@
 """
 PM2.5 24-Hour Hourly Prediction DAG
 ===================================
-Daily DAG that calls a T+1h Triton model recursively to generate hourly
+Daily DAG that calls a T+1h Triton model recursively to generate
 PM2.5 predictions for the next 24 hours, then stores the 24 forecast rows
 per station in PostgreSQL table pm25_predicted_hourly.
 """
@@ -354,7 +354,7 @@ def _call_triton_prediction(**context):
 
     ti.xcom_push(key="prediction_records", value=records)
     ti.xcom_push(key="prediction_rows", value=len(records))
-    logger.info("[triton] Generated %s hourly predictions", len(records))
+    logger.info("[triton] Generated %s hourly predictions from %s", len(records), triton_url)
     return {"prediction_rows": len(records), "triton_url": triton_url}
 
 
