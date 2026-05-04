@@ -634,7 +634,7 @@ class PM25Database:
         records: List[Dict],
         commit: bool = True,
     ) -> int:
-        """Insert or update hourly prediction records."""
+        """Insert hourly prediction records, leaving existing rows unchanged."""
         if not self.conn:
             self.connect()
 
@@ -663,19 +663,7 @@ class PM25Database:
                 task_run_at
             )
             VALUES %s
-            ON CONFLICT (prediction_timestamp, source_station_id) DO UPDATE SET
-                predicted_pm25 = EXCLUDED.predicted_pm25,
-                unit = EXCLUDED.unit,
-                model = EXCLUDED.model,
-                history_hours = EXCLUDED.history_hours,
-                history_start_timestamp = EXCLUDED.history_start_timestamp,
-                history_end_timestamp = EXCLUDED.history_end_timestamp,
-                filled_history_hours = EXCLUDED.filled_history_hours,
-                prediction_generated_at = EXCLUDED.prediction_generated_at,
-                run_type = EXCLUDED.run_type,
-                dag_id = EXCLUDED.dag_id,
-                dag_run_id = EXCLUDED.dag_run_id,
-                task_run_at = EXCLUDED.task_run_at
+            ON CONFLICT (prediction_timestamp, source_station_id) DO NOTHING
             RETURNING 1;
             """
         ).format(table_name=sql.Identifier(table_name))
@@ -692,7 +680,8 @@ class PM25Database:
                 self.conn.commit()
             inserted = len(inserted_rows)
             cur.close()
-            logger.info("Inserted or updated %s rows in %s", inserted, table_name)
+            skipped = len(records) - inserted
+            logger.info("Inserted %s rows in %s; skipped %s existing rows", inserted, table_name, skipped)
             return inserted
         except psycopg2.Error as e:
             if commit:

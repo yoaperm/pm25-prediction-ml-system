@@ -8,8 +8,8 @@ pm25_raw_hourly, builds T+1h features, trains regression and LSTM models,
 compares against the active ONNX model, deploys the best ONNX artifact,
 and publishes it to Triton.
 
-Scheduled runs train all configured stations. Trigger manually with:
-    {"station_id": 56}
+Scheduled and default manual runs train all configured stations. Manual runs
+can optionally pass {"station_ids": [56, 57]} or {"station_id": 56}.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 import pendulum
 from airflow import DAG
 from airflow.exceptions import AirflowSkipException
-from airflow.models.param import Param
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
@@ -37,7 +36,7 @@ FORECAST_HOUR = 1
 RANDOM_STATE = 42
 
 
-def _manual_station_id(context):
+def _manual_station_ids(context) -> set[int] | None:
     dag_run = context.get("dag_run")
     if not dag_run:
         return None
@@ -47,14 +46,21 @@ def _manual_station_id(context):
         return None
 
     conf = dag_run.conf or {}
-    station_id = conf.get("station_id", context["params"].get("station_id"))
-    if station_id is None:
+    if "station_ids" in conf:
+        selected = conf["station_ids"]
+    elif "station_id" in conf:
+        selected = [conf["station_id"]]
+    else:
         return None
 
-    station_id = int(station_id)
-    if station_id not in STATION_IDS:
-        raise ValueError(f"Unsupported station_id={station_id}; expected one of {STATION_IDS}")
-    return station_id
+    if isinstance(selected, (str, int)):
+        selected = [selected]
+
+    station_ids = {int(station_id) for station_id in selected}
+    unsupported = sorted(station_ids - set(STATION_IDS))
+    if unsupported:
+        raise ValueError(f"Unsupported station_ids={unsupported}; expected subset of {STATION_IDS}")
+    return station_ids
 
 
 def _get_splits():
@@ -89,7 +95,11 @@ def _load_station_hourly(station_id: int, db_url: str, data_start: str):
     """)
     try:
         with engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={"station_id": station_id, "data_start": data_start})
+            result = conn.execute(
+                query,
+                {"station_id": station_id, "data_start": data_start},
+            )
+            df = pd.DataFrame(result.fetchall(), columns=result.keys())
     finally:
         engine.dispose()
 
@@ -233,10 +243,10 @@ def _train_station(station_id: int, **context):
     from evaluate import evaluate_model
     from hourly_forecast import build_hourly_supervised_features
 
-    selected_station_id = _manual_station_id(context)
-    if selected_station_id is not None and selected_station_id != station_id:
+    selected_station_ids = _manual_station_ids(context)
+    if selected_station_ids is not None and station_id not in selected_station_ids:
         raise AirflowSkipException(
-            f"Manual run selected station {selected_station_id}; skipping station {station_id}"
+            f"Manual run selected stations {sorted(selected_station_ids)}; skipping station {station_id}"
         )
 
     print(f"\n{'=' * 60}")
@@ -481,14 +491,6 @@ with DAG(
     start_date=pendulum.datetime(2024, 1, 1, tz=BANGKOK_TIMEZONE_NAME),
     catchup=False,
     max_active_runs=1,
-    params={
-        "station_id": Param(
-            56,
-            type="integer",
-            enum=STATION_IDS,
-            description="Station ID to train for next-hour prediction",
-        ),
-    },
     tags=["pm25", "ml", "1h-forecast", "postgresql"],
 ) as dag:
     start = EmptyOperator(task_id="start")
