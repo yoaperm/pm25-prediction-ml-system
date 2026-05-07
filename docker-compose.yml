@@ -170,6 +170,19 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # --- FoonAlert Demo App (Tournament) ---
+  demo:
+    build:
+      context: .
+      dockerfile: Dockerfile.demo
+    ports:
+      - "8502:8502"
+    volumes:
+      - ./demo_data:/app/demo_data
+    environment:
+      PM25_DB_URL: ${PM25_DB_URL:-postgresql://postgres:postgres@postgres:5432/pm25}
+    restart: unless-stopped
+
   # --- Streamlit Dashboard ---
   streamlit:
     build:

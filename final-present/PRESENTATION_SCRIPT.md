@@ -1,8 +1,174 @@
-# FoonAlert — Presentation Plan & Demo Script
+# FoonAlert — Presentation Script (10 นาที วันส่ง 8 พค. 2026)
 
-> **Tournament round — must impress judges. Hook fast, demo live, finish strong.**
+> **Video ≤ 10 นาที | ส่งลิงก์ใน MCV channel**
+
+## ผลจริงจาก Airflow Training (Station 56 — ทดสอบแล้ว)
+
+| Model | RMSE | MAE | R² | สรุป |
+|-------|------|-----|----|------|
+| **Ridge** | **8.50** | **6.39** | **0.22** | 🥇 Best overall |
+| Linear Regression | 8.51 | 6.39 | 0.22 | Baseline strong |
+| XGBoost | 8.64 | 6.42 | 0.20 | ดีสุดในตระกูล tree |
+| Transformer | 8.82 | 6.59 | 0.16 | ตรวจจับ spike ได้เร็ว |
+| Random Forest | 8.81 | 6.61 | 0.17 | Robust ทุก condition |
+| SARIMA | 8.90 | 6.52 | 0.15 | ดีที่สุดสำหรับ spike timing |
+| LSTM | 10.53 | 7.55 | -0.19 | ต้องการข้อมูลมากกว่านี้ |
 
 ---
+
+## ✅ สคริปต์พรีเซนต์ (10 นาที)
+
+### บทของแต่ละคน
+
+| คน | บทบาท | เวลา |
+|----|-------|------|
+| **YG** | MC + Demo Driver | 0:00-1:00, 5:30-6:30, 9:30-10:00 |
+| **Music** | Data & Architecture | 1:00-3:00 |
+| **Sunta** | Baseline + LSTM | 3:00-4:30 |
+| **Olf** | SARIMA | 4:30-5:30 |
+| **Perm** | Transformer | 5:30-6:00 → เข้า demo |
+
+---
+
+## 🎬 Script ตามเวลา
+
+---
+
+### [0:00 – 1:00] **YG — Hook & Problem**
+
+> **"กทม. เป็นเมืองที่ฝุ่น PM2.5 พุ่งสูงกว่า 150 µg/m³ ได้ภายในคืนเดียวโดยไม่มีคำเตือน"**
+
+*"ปัญหาคือ — ระบบปัจจุบันบอกได้แค่ว่าตอนนี้ฝุ่นเท่าไหร่ แต่บอกไม่ได้ว่า 6 ชั่วโมงข้างหน้าจะเป็นยังไง เราเลยสร้าง FoonAlert ขึ้นมา"*
+
+*"FoonAlert คือระบบ ML ที่ predict PM2.5 ล่วงหน้า 24 ชั่วโมง โดยใช้ 7 โมเดลแข่งกัน — วันนี้เราจะพาทุกคนดูว่ามันทำงานยังไง"*
+
+**[เปิดหน้า Live Dashboard → http://54.252.197.62:8502]**
+
+---
+
+### [1:00 – 3:00] **Music — Data & Architecture**
+
+*"ระบบเราดึงข้อมูลจริงทุกชั่วโมงจาก AirBKK API — ครอบคลุม 5 สถานีในกทม. มีข้อมูลทั้งหมด 3 ปี กว่า 96,000 rows"*
+
+*"Pipeline ทำงานผ่าน Apache Airflow — รับข้อมูลชั่วโมงละครั้ง → เทรนโมเดลอัตโนมัติ → Deploy ผ่าน Triton Inference Server → API → Dashboard"*
+
+*"ทำไมถึงใช้ hourly data? เพราะ PM2.5 spike มักเกิดใน 2-4 ชั่วโมง ถ้าใช้ daily data จะ miss จุดวิกฤตนี้ไป"*
+
+**Feature ที่ใช้:** Lag 1/2/3/6/12/24h, Rolling mean/std 6/12/24h, Time features (hour, day_of_week, month)
+
+---
+
+### [3:00 – 4:30] **Sunta — Baseline + LSTM**
+
+*"เราเริ่มจาก Baseline — Linear Regression และ Ridge Regression เพื่อตั้ง benchmark"*
+
+*"ผลที่ได้: Ridge ได้ RMSE = 8.50, MAE = 6.39 — เป็น Best Model ของเรา"*
+
+*"ผมทำ LSTM ด้วย — เป็น Deep Learning ที่น่าจะจับ pattern ระยะยาวได้ดี แต่ผลออกมา RMSE = 10.53, R² = -0.19 ซึ่งยังไม่ดีกว่า baseline"*
+
+*"ทำไม? เพราะ LSTM ต้องการข้อมูลเยอะกว่านี้เพื่อ generalize และ sequence length ที่เราใช้อาจสั้นเกินไปสำหรับ PM2.5 pattern"*
+
+*"Lesson learned: Simpler model ไม่ได้แย่กว่า Deep Learning เสมอไป ต้องดู data และ task ด้วย"*
+
+---
+
+### [4:30 – 5:30] **Olf — SARIMA**
+
+*"ผมทำ SARIMA — Statistical model ที่เหมาะกับ time series ที่มี seasonal pattern"*
+
+*"SARIMA ได้ RMSE = 8.90, MAE = 6.52 — ใกล้เคียง Ridge มาก แต่สิ่งที่ SARIMA ทำได้ดีกว่าคือ spike timing"*
+
+*"SARIMA จับ seasonal pattern ของ PM2.5 ได้ดี เช่น ฝุ่นมักสูงช่วงเช้ามืด 6-8 โมง และช่วงเย็น 17-19 โมง ซึ่งตรงกับ rush hour"*
+
+*"ใน demo จะเห็นว่า SARIMA เริ่มเตือนได้ก่อน ridge ประมาณ 1.9 ชั่วโมง ซึ่งมีความสำคัญมากในแง่ early warning"*
+
+---
+
+### [5:30 – 6:30] **Perm + YG — Transformer & Demo**
+
+**Perm:**
+*"ผมทำ Transformer — ใช้ self-attention mechanism แทน recurrence"*
+
+*"ผลได้ RMSE = 8.82, MAE = 6.59 — ดีกว่า LSTM และ detect spike ได้เร็วสุดใน group ที่ 2.3 ชั่วโมงล่วงหน้า"*
+
+*"Transformer เหมาะกับ dataset ที่มี long-range dependency เช่น PM2.5 ที่ได้รับอิทธิพลจากฤดูกาลย้อนหลังหลายสัปดาห์"*
+
+**YG: [Switch to Spike Replay page]**
+
+*"ตอนนี้ดู demo สำคัญ — Spike Replay"*
+
+*"นี่คือวันที่ 24 ม.ค. 2025 สถานี 59 PM2.5 พุ่งจาก 18 ไป 108 µg/m³ ภายใน 8 ชั่วโมง"*
+
+*"กด Play ดูว่าแต่ละโมเดลเริ่มเตือนเมื่อไหร่"*
+
+**[กด Play, ชี้ที่ scoreboard แต่ละโมเดล]**
+
+---
+
+### [6:30 – 8:30] **YG — Model Battle Results**
+
+**[Switch to Model Battle page]**
+
+*"สรุปผลการแข่งขัน — จากการเทรนจริง 5 สถานี:"*
+
+- *"Ridge/Linear ชนะด้าน accuracy — RMSE ต่ำสุด 8.50"*
+- *"Transformer ชนะด้าน spike detection — เร็วสุด 2.3 ชั่วโมง"*
+- *"SARIMA ชนะด้าน interpretability — อธิบายได้ว่าทำไมถึง predict แบบนี้"*
+- *"LSTM ต้องการ data มากกว่านี้เพื่อ shine"*
+
+*"คำถามคือ — ใช้โมเดลไหน? คำตอบคือ Ensemble: ถ้าอยากได้ accuracy ใช้ Ridge, ถ้าอยากได้ early warning ใช้ Transformer"*
+
+---
+
+### [8:30 – 9:30] **Music — Production System**
+
+*"ระบบนี้ไม่ใช่แค่ research — มัน production-ready:"*
+
+- *"Airflow DAG รันทุกชั่วโมง อัตโนมัติ 100%"*  
+- *"Model monitoring ตรวจ MAE drift ถ้าเกิน threshold → retrain อัตโนมัติ"*
+- *"Triton Inference Server serving ทุก ONNX model พร้อมกัน"*
+- *"PSI metric ตรวจ data distribution shift ไม่ใช่แค่ accuracy"*
+
+*"ทั้งหมดนี้ run บน Docker Compose — deploy ได้ด้วย คำสั่งเดียว: `docker compose up`"*
+
+---
+
+### [9:30 – 10:00] **YG — Closing**
+
+*"สรุป FoonAlert ทำ 3 อย่างที่ระบบปัจจุบันทำไม่ได้:"*
+
+1. *"Predict ล่วงหน้า 24 ชั่วโมง ไม่ใช่แค่บอกปัจจุบัน"*
+2. *"หลายโมเดลแข่งกัน → เลือก best สำหรับแต่ละ scenario ได้"*
+3. *"Production-ready: monitoring, auto-retrain, API, dashboard — ครบวงจร"*
+
+> **"FoonAlert — Don't just see what happened. Know what's about to happen."**
+
+**[คงหน้า Demo ไว้ สวยงาม]**
+
+---
+
+## 📋 เตรียมตัวก่อนถ่าย
+
+### Setup (ทำก่อนเริ่ม record)
+1. เปิด browser ที่ http://54.252.197.62:8502
+2. Login: `demo` / `demo`
+3. อยู่ที่หน้า Live Dashboard
+4. Airflow UI สำรอง: http://54.252.197.62:8080 (admin/admin)
+
+### Slide ที่ต้องมี (brief, ใช้คู่กับ demo)
+- Slide 1: Title "FoonAlert — PM2.5 Spike Prediction"
+- Slide 2: Problem statement (รูป Bangkok smog)
+- Slide 3: System Architecture (C4 diagram)
+- Slide 4: 7 Models comparison table (ตัวเลขจริง)
+- Slide 5: Production pipeline (Airflow + Triton + API)
+- Slide 6: ตาราง Result สรุป + Closing quote
+
+### Tips
+- Demo screen ควรอยู่ซ้าย, คนพูดอยู่ขวา
+- เวลา Spike Replay กด Play ช้าๆ อย่ารีบ
+- ถ้า network lag → มี screen recording สำรองไว้
+- พูดแล้ว switch slide ไม่ต้องรีบ judges ชอบ pause
+
 
 ## 📍 Current State (อ่านก่อน!)
 
