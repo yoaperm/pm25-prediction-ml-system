@@ -678,6 +678,33 @@ dynamic_batching {{ }}
 
 
 # ── Task 4: Compare vs production, deploy if better ──────────────────────────
+# ── Task 4: Export predictions to PostgreSQL ─────────────────────────────────
+def _export_predictions_to_db(**context):
+    import sys
+    import subprocess
+    
+    station_id = _station_id(context)
+    models_dir = _models_dir(station_id)
+    processed_dir = _processed_dir(station_id)
+    db_url = _db_url()
+    
+    print(f"\nExporting predictions for station {station_id}...")
+    
+    # Call the export script
+    result = subprocess.run([
+        sys.executable, "/app/scripts/export_predictions_airflow.py",
+        "--station", str(station_id),
+        "--models-dir", "/app/models",
+        "--processed-dir", "/app/data/processed",
+        "--db-url", db_url,
+    ], capture_output=False)
+    
+    if result.returncode != 0:
+        raise RuntimeError(f"Export predictions failed with code {result.returncode}")
+    
+    print(f"✅ Predictions exported successfully")
+
+
 def _compare_and_deploy(**context):
     import json
     import shutil

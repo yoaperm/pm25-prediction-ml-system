@@ -1,0 +1,5 @@
+model,mae_1h,mae_6h,mae_24h,rmse_1h,rmse_6h,rmse_24h,r2_1h,r2_6h,r2_24h,spike_recall,spike_precision,avg_early_detection_hours,training_time_min,inference_time_ms
+Persistence,8.2,15.3,22.1,11.5,19.8,28.4,0.72,0.45,0.21,0.23,0.45,0.0,0,0.1
+SARIMA,6.8,10.2,13.5,9.3,13.7,17.8,0.81,0.67,0.52,0.71,0.65,2.1,2,5.0
+LSTM,5.4,8.1,11.8,7.8,11.2,15.6,0.87,0.74,0.58,0.82,0.73,3.2,15,8.0
+Transformer,5.1,7.3,10.2,7.2,10.1,13.9,0.89,0.78,0.64,0.87,0.79,4.1,45,12.0

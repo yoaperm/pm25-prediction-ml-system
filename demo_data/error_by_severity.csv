@@ -1,0 +1,21 @@
+model,severity,mae
+Persistence,Good (0-25),6.0
+Persistence,Moderate (25-37.5),8.5
+Persistence,Unhealthy-S (37.5-75),10.5
+Persistence,Unhealthy (75-100),13.8
+Persistence,Very Unhealthy (>100),15.7
+SARIMA,Good (0-25),5.2
+SARIMA,Moderate (25-37.5),7.1
+SARIMA,Unhealthy-S (37.5-75),9.9
+SARIMA,Unhealthy (75-100),12.3
+SARIMA,Very Unhealthy (>100),14.7
+LSTM,Good (0-25),3.9
+LSTM,Moderate (25-37.5),6.8
+LSTM,Unhealthy-S (37.5-75),8.6
+LSTM,Unhealthy (75-100),11.7
+LSTM,Very Unhealthy (>100),13.7
+Transformer,Good (0-25),3.5
+Transformer,Moderate (25-37.5),6.1
+Transformer,Unhealthy-S (37.5-75),8.2
+Transformer,Unhealthy (75-100),11.4
+Transformer,Very Unhealthy (>100),13.7
