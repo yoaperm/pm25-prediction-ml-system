@@ -2,11 +2,12 @@
 """
 generate_foonalert_pptx.py
 ==========================
-Generate FoonAlert presentation slide deck (15 slides, ~15 min talk).
+Generate FoonAlert presentation (16 slides, 10-min video).
+Includes real Airflow results, paper references, and model analysis.
 
 Usage:
     python scripts/generate_foonalert_pptx.py
-    → outputs: reports/FoonAlert_Presentation.pptx
+    -> outputs: reports/FoonAlert_Presentation.pptx
 """
 from pathlib import Path
 from pptx import Presentation
@@ -16,7 +17,7 @@ from pptx.enum.text import PP_ALIGN
 from pptx.enum.shapes import MSO_SHAPE
 
 
-# ── Theme colors ────────────────────────────────────────────────────────────
+# -- Theme colors --
 PRIMARY = RGBColor(0x1A, 0x1A, 0x2E)
 ACCENT = RGBColor(0xE7, 0x4C, 0x3C)
 ACCENT2 = RGBColor(0x9B, 0x59, 0xB6)
@@ -26,6 +27,7 @@ TEXT_LIGHT = RGBColor(0xFF, 0xFF, 0xFF)
 TEXT_DARK = RGBColor(0x2C, 0x3E, 0x50)
 BG_LIGHT = RGBColor(0xFA, 0xFA, 0xFA)
 GRAY = RGBColor(0x95, 0xA5, 0xA6)
+BLUE = RGBColor(0x34, 0x98, 0xDB)
 
 
 def set_slide_bg(slide, color):
@@ -62,7 +64,7 @@ def add_bullets(slide, bullets, left, top, width, height, *,
         p.alignment = PP_ALIGN.LEFT
         p.space_after = Pt(8)
         run = p.add_run()
-        run.text = f"•  {b}"
+        run.text = f"\u2022  {b}"
         run.font.size = Pt(font_size)
         run.font.color.rgb = color
         run.font.name = font_name
@@ -84,446 +86,434 @@ def add_box(slide, left, top, width, height, *, fill_color=BG_LIGHT, line_color=
     return shape
 
 
-# ── Slide builders ──────────────────────────────────────────────────────────
+# =====================================================================
+# SLIDES
+# =====================================================================
 
 def slide_title(prs):
-    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, PRIMARY)
-
-    add_text(slide, "🌫️", 0.5, 1.5, 12.5, 1.5,
-             font_size=80, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
-    add_text(slide, "FoonAlert", 0.5, 3.0, 12.5, 1.0,
+    add_text(slide, "FoonAlert", 0.5, 2.5, 12.5, 1.0,
              font_size=60, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
-    add_text(slide, "Real-Time PM2.5 Spike Forecasting with Model Battle",
-             0.5, 4.0, 12.5, 0.6,
+    add_text(slide, "Real-Time PM2.5 Spike Forecasting System", 0.5, 3.6, 12.5, 0.6,
              font_size=24, color=RGBColor(0xBD, 0xC3, 0xC7), align=PP_ALIGN.CENTER)
-    add_text(slide,
-             "Don't just see what happened — know what's about to happen.",
-             0.5, 5.5, 12.5, 0.6,
-             font_size=18, color=RGBColor(0xE7, 0x4C, 0x3C), align=PP_ALIGN.CENTER)
-    add_text(slide, "Team: yoghurt · Music · Sunta · Olf · Perm",
-             0.5, 6.7, 12.5, 0.5,
-             font_size=14, color=RGBColor(0x95, 0xA5, 0xA6), align=PP_ALIGN.CENTER)
+    add_text(slide, "7 Models | Hourly Predictions | Auto-Retrain Pipeline",
+             0.5, 4.3, 12.5, 0.6,
+             font_size=18, color=ACCENT, align=PP_ALIGN.CENTER)
+    add_text(slide, "Team: YG  |  Music  |  Sunta  |  Olf  |  Perm",
+             0.5, 6.0, 12.5, 0.5,
+             font_size=14, color=GRAY, align=PP_ALIGN.CENTER)
+    add_text(slide, '"Don\'t just see what happened \u2014 know what\'s about to happen."',
+             0.5, 6.5, 12.5, 0.5,
+             font_size=16, color=WARNING, align=PP_ALIGN.CENTER)
 
 
 def slide_hook(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
-
-    add_text(slide, "The Question", 0.5, 0.5, 12.5, 0.7,
-             font_size=22, color=GRAY, align=PP_ALIGN.LEFT)
-
-    add_text(slide,
-             "ทุกแอปบอกค่าฝุ่น \"ตอนนี้\"",
-             0.5, 1.7, 12.5, 1.0,
-             font_size=44, bold=True, color=TEXT_DARK, align=PP_ALIGN.CENTER)
-
-    add_text(slide,
-             "แต่ — อีก 1 ชั่วโมงข้างหน้า มันจะพุ่งไหม?",
-             0.5, 3.0, 12.5, 1.0,
-             font_size=44, bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
-
-    add_text(slide,
-             "ถ้ารู้ก่อน → ใส่หน้ากาก / ปิดหน้าต่าง / เลี่ยงพื้นที่เสี่ยงได้ทัน",
-             0.5, 5.0, 12.5, 0.8,
-             font_size=22, color=TEXT_DARK, align=PP_ALIGN.CENTER)
-
-    add_text(slide, "[ Speaker: YG — 30 sec hook then jump to LIVE DEMO ]",
-             0.5, 6.8, 12.5, 0.4,
-             font_size=12, color=GRAY, align=PP_ALIGN.CENTER)
+    add_text(slide, "The Problem", 0.5, 0.5, 12.5, 0.6,
+             font_size=20, color=GRAY)
+    add_text(slide, "PM2.5 spike 18 \u2192 108 \u00b5g/m\u00b3 in 8 hours",
+             0.5, 1.8, 12.5, 1.0,
+             font_size=40, bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
+    add_text(slide, "No one warned 11 million people in Bangkok.",
+             0.5, 3.0, 12.5, 0.8,
+             font_size=28, color=TEXT_DARK, align=PP_ALIGN.CENTER)
+    add_text(slide, "Current apps: show NOW only | No prediction | No early warning",
+             0.5, 4.5, 12.5, 0.6,
+             font_size=20, color=TEXT_DARK, align=PP_ALIGN.CENTER)
+    add_box(slide, 2.0, 5.3, 9.5, 1.2, fill_color=SUCCESS)
+    add_text(slide, "FoonAlert: Predict +1h, +6h, +24h ahead | 7 models competing | Auto-retrain",
+             2.0, 5.5, 9.5, 0.8,
+             font_size=18, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+    add_text(slide, "[ YG: 0:00-1:00 ]", 0.5, 6.9, 12.5, 0.3,
+             font_size=11, color=GRAY, align=PP_ALIGN.CENTER)
 
 
-def slide_demo_marker(prs, title, subtitle, url, scene):
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-    set_slide_bg(slide, ACCENT)
-
-    add_text(slide, "▶ LIVE DEMO", 0.5, 1.0, 12.5, 0.8,
-             font_size=32, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
-    add_text(slide, title, 0.5, 2.2, 12.5, 1.0,
-             font_size=48, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
-    add_text(slide, subtitle, 0.5, 3.5, 12.5, 0.8,
-             font_size=22, color=RGBColor(0xFF, 0xE0, 0xE0), align=PP_ALIGN.CENTER)
-
-    add_box(slide, 2.5, 4.7, 8.5, 1.5, fill_color=PRIMARY)
-    add_text(slide, f"🌐 {url}", 2.5, 5.0, 8.5, 0.5,
-             font_size=20, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
-    add_text(slide, scene, 2.5, 5.6, 8.5, 0.5,
-             font_size=14, color=RGBColor(0xBD, 0xC3, 0xC7), align=PP_ALIGN.CENTER)
-
-
-def slide_problem(prs):
+def slide_research(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
-
-    add_text(slide, "Problem", 0.5, 0.4, 12.5, 0.6,
+    add_text(slide, "Research Foundation", 0.5, 0.4, 12.5, 0.5,
              font_size=20, color=GRAY)
-    add_text(slide, "PM2.5 Monitoring is Reactive, Not Predictive",
-             0.5, 1.0, 12.5, 0.8, font_size=32, bold=True, color=TEXT_DARK)
+    add_text(slide, "3 Papers That Shaped Our Approach",
+             0.5, 0.9, 12.5, 0.7, font_size=30, bold=True, color=TEXT_DARK)
 
-    add_box(slide, 0.5, 2.2, 6.0, 4.5, fill_color=RGBColor(0xFF, 0xF5, 0xF5),
-            line_color=ACCENT)
-    add_text(slide, "❌ Current State", 0.7, 2.4, 5.7, 0.5,
-             font_size=22, bold=True, color=ACCENT)
-    add_bullets(slide, [
-        "Apps show only current PM2.5",
-        "By the time you see \"Unhealthy\" — you've inhaled it",
-        "No actionable lead time",
-        "Bangkok: 100+ unhealthy days/year",
-        "11M people at risk"
-    ], 0.7, 3.0, 5.7, 3.5, font_size=16, color=TEXT_DARK)
+    papers = [
+        ("[1] Malakouti (2025)",
+         "From accurate to actionable: PM2.5 forecasting with feature engineering & SHAP",
+         "Environmental Challenges 21, 101290",
+         "We used: Lag/rolling/diff features + SHAP interpretation",
+         BLUE),
+        ("[2] Buya et al. (2024)",
+         "Estimating Ground-level Hourly PM2.5 in Thailand (IEEE JSTARS)",
+         "DOI: 10.1109/JSTARS.2024.3384964",
+         "We used: Hourly granularity + rush-hour time features",
+         ACCENT),
+        ("[3] Jankondee et al. (2024)",
+         "PM2.5 modeling based on CALIPSO in Bangkok",
+         "Creative Science 16(3), DOI: 10.55674/cs.v16i3.257117",
+         "We used: Linear models as strong baseline for Bangkok PM2.5",
+         SUCCESS),
+    ]
 
-    add_box(slide, 6.8, 2.2, 6.0, 4.5, fill_color=RGBColor(0xF0, 0xFF, 0xF5),
-            line_color=SUCCESS)
-    add_text(slide, "✅ FoonAlert", 7.0, 2.4, 5.7, 0.5,
-             font_size=22, bold=True, color=SUCCESS)
-    add_bullets(slide, [
-        "Predicts +1h, +6h, +24h ahead",
-        "Detects spike before it happens",
-        "Multi-model consensus voting",
-        "Real-time pipeline (hourly)",
-        "Production-ready: Triton + Airflow"
-    ], 7.0, 3.0, 5.7, 3.5, font_size=16, color=TEXT_DARK)
+    y = 1.9
+    for title, desc, journal, insight, color in papers:
+        add_box(slide, 0.5, y, 12.0, 1.5, fill_color=RGBColor(0xFF, 0xFF, 0xFF), line_color=color)
+        add_text(slide, title, 0.7, y + 0.1, 7.5, 0.4,
+                 font_size=15, bold=True, color=color)
+        add_text(slide, desc, 0.7, y + 0.5, 7.5, 0.5,
+                 font_size=13, color=TEXT_DARK)
+        add_text(slide, journal, 0.7, y + 1.0, 7.5, 0.3,
+                 font_size=11, color=GRAY)
+        add_box(slide, 8.5, y + 0.2, 3.8, 1.0, fill_color=color)
+        add_text(slide, insight, 8.6, y + 0.35, 3.6, 0.8,
+                 font_size=11, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+        y += 1.7
+
+    add_text(slide, "[ Music: 1:00-3:00 ]", 0.5, 6.9, 12.5, 0.3,
+             font_size=11, color=GRAY, align=PP_ALIGN.CENTER)
 
 
 def slide_data(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
-
-    add_text(slide, "Data", 0.5, 0.4, 12.5, 0.6,
+    add_text(slide, "Data Pipeline", 0.5, 0.4, 12.5, 0.5,
              font_size=20, color=GRAY)
-    add_text(slide, "Real-Time AirBKK Pipeline",
-             0.5, 1.0, 12.5, 0.8, font_size=32, bold=True, color=TEXT_DARK)
+    add_text(slide, "AirBKK API \u2192 Airflow \u2192 PostgreSQL \u2192 Triton \u2192 Dashboard",
+             0.5, 1.0, 12.5, 0.7, font_size=26, bold=True, color=TEXT_DARK, align=PP_ALIGN.CENTER)
 
-    # Pipeline diagram boxes
     boxes = [
-        ("AirBKK API", "Hourly\nGov data", 0.5),
-        ("Airflow", "Hourly\ningest DAG", 3.0),
-        ("PostgreSQL", "5 stations\n96k+ records", 5.5),
-        ("Triton", "ONNX serving\n<10ms", 8.0),
-        ("FoonAlert UI", "Streamlit\ndemo", 10.5),
+        ("AirBKK API", "Hourly\nThai Gov", 0.3, BLUE),
+        ("Airflow", "Ingest DAG\nHourly cron", 2.9, WARNING),
+        ("PostgreSQL", "5 stations\n96k+ rows", 5.5, PRIMARY),
+        ("Training", "7 models\nAuto-retrain", 8.1, ACCENT),
+        ("Triton+API", "ONNX serve\n<10ms", 10.7, ACCENT2),
     ]
+    for label, desc, x, color in boxes:
+        add_box(slide, x, 2.2, 2.3, 1.6, fill_color=color)
+        add_text(slide, label, x, 2.3, 2.3, 0.5,
+                 font_size=14, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+        add_text(slide, desc, x, 2.8, 2.3, 0.8,
+                 font_size=11, color=RGBColor(0xDD, 0xDD, 0xFF), align=PP_ALIGN.CENTER)
 
-    for label, desc, x in boxes:
-        add_box(slide, x, 2.5, 2.2, 1.6, fill_color=PRIMARY)
-        add_text(slide, label, x, 2.7, 2.2, 0.5,
-                 font_size=16, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
-        add_text(slide, desc, x, 3.2, 2.2, 0.8,
-                 font_size=11, color=RGBColor(0xBD, 0xC3, 0xC7), align=PP_ALIGN.CENTER)
+    add_text(slide, "Stations: 56, 57, 58, 59, 61  |  Jan 2023 \u2192 May 2026  |  Hourly  |  96,000+ rows",
+             0.5, 4.2, 12.5, 0.5, font_size=16, color=TEXT_DARK, align=PP_ALIGN.CENTER)
 
-    # Add arrows between boxes
-    for i in range(4):
-        x = 2.7 + i * 2.5
-        add_text(slide, "→", x, 2.9, 0.3, 0.5,
-                 font_size=24, color=ACCENT, align=PP_ALIGN.CENTER)
-
-    # Stats
-    add_text(slide, "📊 Stations: 56, 57, 58, 59, 61   ·   Range: Jan 2023 → present   ·   Granularity: 1 hour",
-             0.5, 4.5, 12.5, 0.5, font_size=16, color=TEXT_DARK, align=PP_ALIGN.CENTER)
-
-    # Reference
-    add_box(slide, 0.5, 5.3, 12.0, 1.5, fill_color=RGBColor(0xFF, 0xFA, 0xE5))
-    add_text(slide, "📚 Reference", 0.7, 5.4, 11.6, 0.4,
+    add_box(slide, 0.5, 5.0, 12.0, 1.7, fill_color=RGBColor(0xFF, 0xFA, 0xE5))
+    add_text(slide, "Design Decisions (from papers)", 0.7, 5.1, 11.6, 0.4,
              font_size=14, bold=True, color=WARNING)
-    add_text(slide,
-             "Benchmark: PM2.5 regression model (paper 2025) — same dataset family, baseline regression target",
-             0.7, 5.8, 11.6, 0.7, font_size=14, color=TEXT_DARK)
+    add_bullets(slide, [
+        "Hourly (not daily): PM2.5 spike occurs in 2-4h [Buya 2024]",
+        "Feature eng: lag 1-24h + rolling mean/std + time [Malakouti 2025]",
+        "Linear baseline strong in Bangkok: R\u00b2=0.99 [Jankondee 2024]",
+    ], 0.7, 5.5, 11.6, 1.2, font_size=14, color=TEXT_DARK)
 
-    add_text(slide, "[ Speaker: Music — 2 min ]",
-             0.5, 6.9, 12.5, 0.3,
+    add_text(slide, "[ Music: 1:00-3:00 ]", 0.5, 6.9, 12.5, 0.3,
              font_size=11, color=GRAY, align=PP_ALIGN.CENTER)
 
 
 def slide_models(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
+    add_text(slide, "7 Models \u2014 The Battle Lineup", 0.5, 0.4, 12.5, 0.7,
+             font_size=30, bold=True, color=TEXT_DARK)
 
-    add_text(slide, "Models — The Battle Lineup", 0.5, 0.5, 12.5, 0.8,
-             font_size=32, bold=True, color=TEXT_DARK)
-
-    contestants = [
-        ("📊", "Persistence", "Baseline", "Predict = current\nNo learning",
-         GRAY, "Baseline only"),
-        ("📈", "SARIMA", "The Statistician", "Daily seasonality\nFast train: 2 min",
-         RGBColor(0x34, 0x98, 0xDB), "Stable patterns"),
-        ("🧠", "LSTM", "Memory Model", "Sequence memory\nShort-term spikes",
-         ACCENT, "Reactive trends"),
-        ("⚡", "Transformer", "Attention Model", "Long-range context\nHighest accuracy",
-         ACCENT2, "Long horizons"),
+    # Row 1: ML models
+    row1 = [
+        ("Linear", "Baseline\nRMSE 8.51", GRAY, "Sunta"),
+        ("Ridge", "BEST\nRMSE 8.50", SUCCESS, "Sunta"),
+        ("Random Forest", "Ensemble\nRMSE 8.81", BLUE, "Sunta"),
+        ("XGBoost", "Boosting\nRMSE 8.64", WARNING, "Sunta"),
     ]
-
-    for i, (emoji, name, role, desc, color, best) in enumerate(contestants):
-        x = 0.5 + i * 3.15
-        add_box(slide, x, 1.7, 2.95, 5.0, fill_color=RGBColor(0xFF, 0xFF, 0xFF),
-                line_color=color)
-        add_text(slide, emoji, x, 1.9, 2.95, 0.8,
-                 font_size=40, color=color, align=PP_ALIGN.CENTER)
-        add_text(slide, name, x, 2.8, 2.95, 0.5,
-                 font_size=20, bold=True, color=TEXT_DARK, align=PP_ALIGN.CENTER)
-        add_text(slide, role, x, 3.3, 2.95, 0.4,
-                 font_size=12, color=color, align=PP_ALIGN.CENTER)
-        add_text(slide, desc, x, 3.9, 2.95, 1.5,
+    for i, (name, desc, color, owner) in enumerate(row1):
+        x = 0.3 + i * 3.2
+        add_box(slide, x, 1.4, 3.0, 1.8, fill_color=RGBColor(0xFF, 0xFF, 0xFF), line_color=color)
+        add_text(slide, name, x, 1.5, 3.0, 0.4,
+                 font_size=15, bold=True, color=color, align=PP_ALIGN.CENTER)
+        add_text(slide, desc, x, 1.9, 3.0, 0.8,
                  font_size=13, color=TEXT_DARK, align=PP_ALIGN.CENTER)
-        add_box(slide, x + 0.3, 5.6, 2.35, 0.7, fill_color=color)
-        add_text(slide, f"Best: {best}", x + 0.3, 5.7, 2.35, 0.5,
-                 font_size=12, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+        add_text(slide, owner, x, 2.8, 3.0, 0.3,
+                 font_size=10, color=GRAY, align=PP_ALIGN.CENTER)
 
-    add_text(slide,
-             "[ Speakers: Sunta (Regression+LSTM) → Olf (SARIMA) → Perm (Transformer) — 3 min total ]",
+    # Row 2: Deep/Statistical
+    row2 = [
+        ("LSTM", "Deep Learning\nRMSE 10.53\n(needs more data)", ACCENT, "Sunta"),
+        ("SARIMA", "Statistical\nRMSE 8.90\n(spike timing)", BLUE, "Olf"),
+        ("Transformer", "Self-Attention\nRMSE 8.82\n(early detection)", ACCENT2, "Perm"),
+    ]
+    for i, (name, desc, color, owner) in enumerate(row2):
+        x = 1.2 + i * 3.8
+        add_box(slide, x, 3.7, 3.5, 2.5, fill_color=RGBColor(0xFF, 0xFF, 0xFF), line_color=color)
+        add_text(slide, name, x, 3.8, 3.5, 0.5,
+                 font_size=18, bold=True, color=color, align=PP_ALIGN.CENTER)
+        add_text(slide, desc, x, 4.3, 3.5, 1.3,
+                 font_size=13, color=TEXT_DARK, align=PP_ALIGN.CENTER)
+        add_text(slide, owner, x, 5.8, 3.5, 0.3,
+                 font_size=11, color=GRAY, align=PP_ALIGN.CENTER)
+
+    add_text(slide, "[ Sunta: 3:00-4:30 | Olf: 4:30-5:30 | Perm: 5:30-6:00 ]",
              0.5, 6.9, 12.5, 0.3, font_size=11, color=GRAY, align=PP_ALIGN.CENTER)
 
 
 def slide_features(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
-
-    add_text(slide, "Feature Engineering — 19 Features", 0.5, 0.5, 12.5, 0.8,
+    add_text(slide, "Feature Engineering \u2014 19 Features", 0.5, 0.4, 12.5, 0.7,
              font_size=28, bold=True, color=TEXT_DARK)
 
     cols = [
-        ("⏱️ Lag Features", [
-            "pm25_lag_1h",
-            "pm25_lag_2h",
-            "pm25_lag_3h",
-            "pm25_lag_6h",
-            "pm25_lag_12h",
-            "pm25_lag_24h",
+        ("Lag Features (6)", [
+            "pm25_lag_1h", "pm25_lag_2h",
+            "pm25_lag_3h", "pm25_lag_6h",
+            "pm25_lag_12h", "pm25_lag_24h",
         ]),
-        ("📉 Rolling Stats", [
-            "rolling_mean_6h",
-            "rolling_mean_12h",
-            "rolling_mean_24h",
-            "rolling_std_6h",
-            "rolling_std_12h",
-            "rolling_std_24h",
+        ("Rolling Stats (6)", [
+            "rolling_mean_6h", "rolling_mean_12h",
+            "rolling_mean_24h", "rolling_std_6h",
+            "rolling_std_12h", "rolling_std_24h",
         ]),
-        ("📅 Time Features", [
-            "hour",
-            "day_of_week",
-            "month",
-            "day_of_year",
-            "is_weekend",
-            "diff_1h, diff_24h",
+        ("Time + Diff (7)", [
+            "hour", "day_of_week", "month",
+            "day_of_year", "is_weekend",
+            "pm25_diff_1h", "pm25_diff_24h",
         ]),
     ]
 
     for i, (title, feats) in enumerate(cols):
         x = 0.5 + i * 4.2
-        add_box(slide, x, 1.7, 4.0, 4.8, fill_color=RGBColor(0xFF, 0xFF, 0xFF),
-                line_color=PRIMARY)
-        add_text(slide, title, x, 1.9, 4.0, 0.5,
-                 font_size=18, bold=True, color=PRIMARY, align=PP_ALIGN.CENTER)
-        add_bullets(slide, feats, x + 0.2, 2.5, 3.7, 4.0,
-                    font_size=14, color=TEXT_DARK, font_name="Consolas")
+        add_box(slide, x, 1.5, 4.0, 4.8, fill_color=RGBColor(0xFF, 0xFF, 0xFF), line_color=PRIMARY)
+        add_text(slide, title, x, 1.6, 4.0, 0.5,
+                 font_size=16, bold=True, color=PRIMARY, align=PP_ALIGN.CENTER)
+        add_bullets(slide, feats, x + 0.2, 2.2, 3.7, 4.0,
+                    font_size=13, color=TEXT_DARK, font_name="Consolas")
 
-    add_text(slide, "Target: pm25_h1, pm25_h2, ..., pm25_h24 (multi-output)",
-             0.5, 6.7, 12.5, 0.4, font_size=14, bold=True,
+    add_text(slide, "Target: PM2.5 at T+24h  |  All features shifted to prevent leakage",
+             0.5, 6.5, 12.5, 0.4, font_size=14, bold=True,
              color=ACCENT2, align=PP_ALIGN.CENTER)
+
+
+def slide_demo_marker(prs, title, subtitle, url, scene):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    set_slide_bg(slide, ACCENT)
+    add_text(slide, "LIVE DEMO", 0.5, 1.0, 12.5, 0.8,
+             font_size=32, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+    add_text(slide, title, 0.5, 2.2, 12.5, 1.0,
+             font_size=44, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+    add_text(slide, subtitle, 0.5, 3.5, 12.5, 0.8,
+             font_size=20, color=RGBColor(0xFF, 0xE0, 0xE0), align=PP_ALIGN.CENTER)
+    add_box(slide, 2.5, 4.7, 8.5, 1.5, fill_color=PRIMARY)
+    add_text(slide, url, 2.5, 5.0, 8.5, 0.5,
+             font_size=18, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+    add_text(slide, scene, 2.5, 5.5, 8.5, 0.5,
+             font_size=14, color=RGBColor(0xBD, 0xC3, 0xC7), align=PP_ALIGN.CENTER)
 
 
 def slide_results(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
+    add_text(slide, "Results \u2014 Real Training (Airflow, Station 56)", 0.5, 0.3, 12.5, 0.7,
+             font_size=28, bold=True, color=TEXT_DARK)
+    add_text(slide, "T+24h forecast | Test: 3 months | Trained 2026-05-07",
+             0.5, 0.9, 12.5, 0.4, font_size=13, color=GRAY)
 
-    add_text(slide, "Model Battle — Results", 0.5, 0.5, 12.5, 0.8,
-             font_size=32, bold=True, color=TEXT_DARK)
-
-    # Header row
-    headers = ["Rank", "Model", "MAE +1h", "MAE +6h", "MAE +24h", "Spike Recall", "Avg Early Detect"]
-    col_widths = [0.8, 2.2, 1.5, 1.5, 1.5, 1.8, 2.2]
-    x = 0.5
-    y = 1.6
-    add_box(slide, x, y, sum(col_widths), 0.6, fill_color=PRIMARY)
-    cx = x
-    for h, w in zip(headers, col_widths):
-        add_text(slide, h, cx, y + 0.05, w, 0.5,
+    headers = ["#", "Model", "RMSE", "MAE", "R\u00b2", "Owner"]
+    col_w = [0.6, 3.2, 1.5, 1.5, 1.5, 2.0]
+    x0 = 0.7
+    y = 1.5
+    add_box(slide, x0, y, sum(col_w), 0.55, fill_color=PRIMARY)
+    cx = x0
+    for h, w in zip(headers, col_w):
+        add_text(slide, h, cx, y + 0.08, w, 0.4,
                  font_size=13, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
         cx += w
 
     rows = [
-        ("🥇 1", "Transformer", "5.1", "7.3", "10.2", "87%", "4.1 hours"),
-        ("🥈 2", "LSTM", "5.4", "8.1", "11.8", "82%", "3.2 hours"),
-        ("🥉 3", "SARIMA", "6.8", "10.2", "13.5", "71%", "2.1 hours"),
-        ("4", "Persistence", "8.2", "15.3", "22.1", "23%", "—"),
-    ]
-    row_colors = [
-        RGBColor(0xFF, 0xF5, 0xE8),
-        RGBColor(0xFF, 0xFF, 0xFF),
-        RGBColor(0xFF, 0xF5, 0xE8),
-        RGBColor(0xFF, 0xFF, 0xFF),
+        ("1", "Ridge Regression", "8.50", "6.39", "0.22", "Sunta"),
+        ("2", "Linear Regression", "8.51", "6.39", "0.22", "Sunta"),
+        ("3", "XGBoost", "8.64", "6.42", "0.20", "Sunta"),
+        ("4", "Random Forest", "8.81", "6.61", "0.17", "Sunta"),
+        ("5", "Transformer", "8.82", "6.59", "0.16", "Perm"),
+        ("6", "SARIMA", "8.90", "6.52", "0.15", "Olf"),
+        ("7", "LSTM", "10.53", "7.55", "-0.19", "Sunta"),
     ]
 
     for ri, row in enumerate(rows):
-        ry = y + 0.6 + ri * 0.55
-        add_box(slide, x, ry, sum(col_widths), 0.55, fill_color=row_colors[ri])
-        cx = x
-        for val, w in zip(row, col_widths):
+        ry = y + 0.55 + ri * 0.5
+        bg = RGBColor(0xE8, 0xFF, 0xE8) if ri == 0 else (
+             RGBColor(0xF8, 0xF8, 0xF8) if ri % 2 == 0 else RGBColor(0xFF, 0xFF, 0xFF))
+        add_box(slide, x0, ry, sum(col_w), 0.5, fill_color=bg)
+        cx = x0
+        for val, w in zip(row, col_w):
             bold = (ri == 0)
-            color = SUCCESS if ri == 0 else TEXT_DARK
-            add_text(slide, val, cx, ry + 0.1, w, 0.4,
-                     font_size=13, bold=bold, color=color, align=PP_ALIGN.CENTER)
+            c = SUCCESS if ri == 0 else TEXT_DARK
+            add_text(slide, val, cx, ry + 0.08, w, 0.35,
+                     font_size=12, bold=bold, color=c, align=PP_ALIGN.CENTER)
             cx += w
 
-    # Winner banner
-    add_box(slide, 1.5, 5.3, 10.0, 1.2, fill_color=ACCENT2)
-    add_text(slide, "🏆 Winner: Transformer", 1.5, 5.4, 10.0, 0.5,
-             font_size=24, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
-    add_text(slide, "Best 6h+ accuracy · Highest spike recall · Detects 4h before peak",
-             1.5, 5.9, 10.0, 0.5,
-             font_size=14, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+    # Summary banner
+    add_box(slide, 0.7, 5.3, 11.5, 1.3, fill_color=SUCCESS)
+    add_text(slide, "Key Findings:", 0.9, 5.4, 11.0, 0.4,
+             font_size=16, bold=True, color=TEXT_LIGHT)
+    add_bullets(slide, [
+        "Ridge wins overall (simple + good features = best accuracy)",
+        "Transformer best for spike early detection (attention mechanism)",
+        "LSTM needs more data; simple models beat it here",
+    ], 0.9, 5.8, 11.0, 0.8, font_size=13, color=TEXT_LIGHT)
 
-    add_text(slide, "[ Speaker: Perm — 2 min — switch to FoonAlert Model Battle page ]",
-             0.5, 6.9, 12.5, 0.3,
+    add_text(slide, "[ YG: 6:30-8:30 ]", 0.5, 6.9, 12.5, 0.3,
              font_size=11, color=GRAY, align=PP_ALIGN.CENTER)
 
 
 def slide_when_to_use(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
-
-    add_text(slide, "When to Use Which Model", 0.5, 0.5, 12.5, 0.8,
-             font_size=32, bold=True, color=TEXT_DARK)
+    add_text(slide, "When to Use Which Model?", 0.5, 0.4, 12.5, 0.7,
+             font_size=28, bold=True, color=TEXT_DARK)
 
     rows = [
-        ("Stable day, routine monitoring", "SARIMA", "Fast, accurate enough", RGBColor(0x34, 0x98, 0xDB)),
-        ("Suspicious trend starting", "LSTM", "Responds quickly to changes", ACCENT),
-        ("Long-range planning (12-24h)", "Transformer", "Attention captures long patterns", ACCENT2),
-        ("Resource constrained (edge)", "Persistence/SARIMA", "Minimal compute", GRAY),
-        ("Critical alert", "All 3 — Consensus vote", "If 2/3 agree → trust it", SUCCESS),
+        ("Routine monitoring", "Ridge", "Best accuracy, fast inference", SUCCESS),
+        ("Spike early detection", "Transformer", "Attention captures onset patterns", ACCENT2),
+        ("Seasonal analysis", "SARIMA", "Interpretable seasonal decomposition", BLUE),
+        ("Resource-limited", "Ridge / Linear", "Minimal compute, ONNX <2ms", GRAY),
+        ("Critical alert", "Ensemble (all)", "Consensus vote = high confidence", ACCENT),
     ]
-
-    y = 1.7
+    y = 1.4
     for scenario, model, why, color in rows:
-        add_box(slide, 0.5, y, 12.0, 0.85, fill_color=RGBColor(0xFF, 0xFF, 0xFF),
-                line_color=color)
-        add_text(slide, scenario, 0.7, y + 0.18, 4.5, 0.5,
-                 font_size=15, color=TEXT_DARK)
-        add_text(slide, model, 5.3, y + 0.18, 3.0, 0.5,
-                 font_size=15, bold=True, color=color)
-        add_text(slide, why, 8.4, y + 0.18, 4.0, 0.5,
-                 font_size=13, color=GRAY)
-        y += 1.0
+        add_box(slide, 0.5, y, 12.0, 0.9, fill_color=RGBColor(0xFF, 0xFF, 0xFF), line_color=color)
+        add_text(slide, scenario, 0.7, y + 0.2, 4.0, 0.5, font_size=15, color=TEXT_DARK)
+        add_text(slide, model, 4.8, y + 0.2, 3.0, 0.5, font_size=15, bold=True, color=color)
+        add_text(slide, why, 7.9, y + 0.2, 4.5, 0.5, font_size=13, color=GRAY)
+        y += 1.05
 
 
 def slide_architecture(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
+    add_text(slide, "Production Architecture", 0.5, 0.4, 12.5, 0.7,
+             font_size=28, bold=True, color=TEXT_DARK)
 
-    add_text(slide, "System Architecture", 0.5, 0.5, 12.5, 0.8,
-             font_size=32, bold=True, color=TEXT_DARK)
+    layers = [
+        ("Data Layer", "AirBKK API \u2192 Airflow Hourly Ingest \u2192 PostgreSQL (pm25_raw_hourly)", BLUE),
+        ("ML Layer", "Airflow Training DAG \u2192 7 Models \u2192 MLflow tracking \u2192 ONNX export", ACCENT),
+        ("Serving Layer", "Triton Inference Server \u2192 FastAPI \u2192 Streamlit FoonAlert UI", ACCENT2),
+        ("Monitoring Layer", "PSI drift detection \u2192 Auto-retrain trigger \u2192 Hot-swap via Triton", SUCCESS),
+    ]
+    y = 1.4
+    for title, desc, color in layers:
+        add_box(slide, 0.5, y, 12.0, 1.1, fill_color=RGBColor(0xFF, 0xFF, 0xFF), line_color=color)
+        add_text(slide, title, 0.7, y + 0.1, 3.0, 0.4, font_size=14, bold=True, color=color)
+        add_text(slide, desc, 3.8, y + 0.3, 8.5, 0.5, font_size=14, color=TEXT_DARK)
+        y += 1.25
 
-    # Layer 1: Data
-    add_box(slide, 0.5, 1.7, 12.0, 1.0, fill_color=RGBColor(0xE8, 0xF4, 0xFF))
-    add_text(slide, "Data Layer", 0.7, 1.8, 11.6, 0.4,
-             font_size=14, bold=True, color=PRIMARY)
-    add_text(slide, "AirBKK API  →  Airflow Hourly Ingest  →  PostgreSQL (pm25_raw_hourly)",
-             0.7, 2.2, 11.6, 0.4, font_size=15, color=TEXT_DARK)
+    add_box(slide, 1.5, 6.0, 10.0, 0.7, fill_color=PRIMARY)
+    add_text(slide, "Deploy: docker compose up | Zero downtime | Self-healing pipeline",
+             1.5, 6.1, 10.0, 0.5, font_size=16, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
 
-    # Layer 2: ML
-    add_box(slide, 0.5, 2.9, 12.0, 1.0, fill_color=RGBColor(0xFF, 0xE8, 0xE8))
-    add_text(slide, "ML Layer", 0.7, 3.0, 11.6, 0.4,
-             font_size=14, bold=True, color=ACCENT)
-    add_text(slide, "Airflow Training DAG  →  5 Models (Linear/Ridge/RF/XGBoost/LSTM/SARIMA/Transformer)  →  MLflow + ONNX",
-             0.7, 3.4, 11.6, 0.4, font_size=14, color=TEXT_DARK)
-
-    # Layer 3: Serving
-    add_box(slide, 0.5, 4.1, 12.0, 1.0, fill_color=RGBColor(0xF0, 0xE8, 0xFF))
-    add_text(slide, "Serving Layer", 0.7, 4.2, 11.6, 0.4,
-             font_size=14, bold=True, color=ACCENT2)
-    add_text(slide, "Triton Inference Server  →  FastAPI  →  Streamlit Dashboard (FoonAlert)",
-             0.7, 4.6, 11.6, 0.4, font_size=15, color=TEXT_DARK)
-
-    # Layer 4: Monitoring
-    add_box(slide, 0.5, 5.3, 12.0, 1.0, fill_color=RGBColor(0xE8, 0xFF, 0xE8))
-    add_text(slide, "Monitoring Layer", 0.7, 5.4, 11.6, 0.4,
-             font_size=14, bold=True, color=SUCCESS)
-    add_text(slide, "Drift detection (PSI > 0.2)  →  Auto-retrain  →  Hot-swap via Triton config",
-             0.7, 5.8, 11.6, 0.4, font_size=15, color=TEXT_DARK)
-
-    add_text(slide, "✨ Production-ready · Zero downtime · Self-healing",
-             0.5, 6.5, 12.5, 0.5, font_size=18, bold=True,
-             color=PRIMARY, align=PP_ALIGN.CENTER)
+    add_text(slide, "[ Music: 8:30-9:30 ]", 0.5, 6.9, 12.5, 0.3,
+             font_size=11, color=GRAY, align=PP_ALIGN.CENTER)
 
 
 def slide_why_matters(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, PRIMARY)
-
-    add_text(slide, "Why It Matters", 0.5, 0.5, 12.5, 0.8,
+    add_text(slide, "Why It Matters", 0.5, 0.5, 12.5, 0.7,
              font_size=20, color=GRAY)
-    add_text(slide, "Bangkok needs early warning",
-             0.5, 1.3, 12.5, 1.0, font_size=40, bold=True, color=TEXT_LIGHT)
+    add_text(slide, "Bangkok needs early warning", 0.5, 1.3, 12.5, 0.8,
+             font_size=38, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
 
     stats = [
-        ("11M", "people in Bangkok", ACCENT),
-        ("100+", "unhealthy days/year", WARNING),
-        ("4h", "early warning Transformer can give", SUCCESS),
-        ("82-87%", "spike recall by deep models", ACCENT2),
+        ("11M", "people at risk", ACCENT),
+        ("100+", "unhealthy days/yr", WARNING),
+        ("24h", "advance prediction", SUCCESS),
+        ("7", "competing models", ACCENT2),
     ]
-
     for i, (num, label, color) in enumerate(stats):
         x = 0.5 + i * 3.15
         add_box(slide, x, 3.0, 2.95, 2.5, fill_color=RGBColor(0x24, 0x24, 0x44))
         add_text(slide, num, x, 3.2, 2.95, 1.0,
                  font_size=44, bold=True, color=color, align=PP_ALIGN.CENTER)
-        add_text(slide, label, x, 4.4, 2.95, 1.0,
+        add_text(slide, label, x, 4.4, 2.95, 0.8,
                  font_size=14, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
 
-    add_text(slide,
-             "Early warning → behavior change → reduced exposure → lower health cost",
-             0.5, 6.0, 12.5, 0.6,
-             font_size=18, color=RGBColor(0xBD, 0xC3, 0xC7), align=PP_ALIGN.CENTER)
+    add_text(slide, "Early warning \u2192 behavior change \u2192 reduced exposure \u2192 lower health cost",
+             0.5, 6.0, 12.5, 0.5, font_size=18, color=RGBColor(0xBD, 0xC3, 0xC7), align=PP_ALIGN.CENTER)
 
 
 def slide_closing(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, PRIMARY)
-
-    add_text(slide, "Most apps tell you:", 0.5, 1.2, 12.5, 0.7,
-             font_size=24, color=GRAY, align=PP_ALIGN.CENTER)
-    add_text(slide, "\"How bad is the air now?\"", 0.5, 2.0, 12.5, 1.0,
+    add_text(slide, "Most apps tell you:", 0.5, 1.5, 12.5, 0.6,
+             font_size=22, color=GRAY, align=PP_ALIGN.CENTER)
+    add_text(slide, '"How bad is the air NOW?"', 0.5, 2.2, 12.5, 0.8,
              font_size=36, bold=True, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
-
-    add_text(slide, "FoonAlert asks:", 0.5, 3.5, 12.5, 0.7,
-             font_size=24, color=GRAY, align=PP_ALIGN.CENTER)
-    add_text(slide, "\"How bad will it become — and",
-             0.5, 4.3, 12.5, 0.8,
+    add_text(slide, "FoonAlert asks:", 0.5, 3.8, 12.5, 0.6,
+             font_size=22, color=GRAY, align=PP_ALIGN.CENTER)
+    add_text(slide, '"How bad WILL it become \u2014', 0.5, 4.5, 12.5, 0.8,
              font_size=36, bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
-    add_text(slide, "can we warn people before the spike?\"",
-             0.5, 5.0, 12.5, 0.8,
+    add_text(slide, 'and can we warn people in time?"', 0.5, 5.2, 12.5, 0.8,
              font_size=36, bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
-
-    add_text(slide, "🌫️  Thank you!  ·  Questions?",
-             0.5, 6.4, 12.5, 0.6,
+    add_text(slide, "Thank you!  |  Questions?", 0.5, 6.5, 12.5, 0.5,
              font_size=22, color=TEXT_LIGHT, align=PP_ALIGN.CENTER)
+    add_text(slide, "[ YG: 9:30-10:00 ]", 0.5, 6.9, 12.5, 0.3,
+             font_size=11, color=GRAY, align=PP_ALIGN.CENTER)
 
 
-def slide_team_qa(prs):
+def slide_references(prs):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     set_slide_bg(slide, BG_LIGHT)
-
-    add_text(slide, "Q&A — Likely Questions", 0.5, 0.5, 12.5, 0.8,
+    add_text(slide, "References", 0.5, 0.4, 12.5, 0.6,
              font_size=28, bold=True, color=TEXT_DARK)
 
-    qas = [
-        ("Q: ทำไม Transformer ดีกว่า LSTM?",
-         "A: Long-range attention จับ pattern ยาวๆ ได้ — แต่ trade-off คือ train แพงกว่า"),
-        ("Q: Production จริงใช้โมเดลไหน?",
-         "A: ปัจจุบัน XGBoost + Ridge ใน DB · Triton hot-swap ได้ทันทีเมื่อมีโมเดลใหม่ดีกว่า"),
-        ("Q: Retrain บ่อยแค่ไหน?",
-         "A: Daily check · ถ้า drift PSI > 0.2 หรือ MAE > threshold → trigger training DAG"),
-        ("Q: Spike Risk คำนวณยังไง?",
-         "A: Rule-based: max(predictions_6h) > 75 OR consensus 2/3 models agree → High"),
-        ("Q: ทำไม mock SARIMA/Transformer ใน demo?",
-         "A: Parallel development — UI พร้อมก่อน · Replace ง่ายแค่แทน CSV (no UI change)"),
+    refs = [
+        "[1] Malakouti, S.M. (2025). From accurate to actionable: Interpretable PM2.5",
+        "    forecasting with feature engineering and SHAP. Env. Challenges, 21, 101290.",
+        "",
+        "[2] Buya, S., Gokon, H., Dam, H.C., Usanavasin, S., Karnjana, J. (2024).",
+        "    Estimating Ground-level Hourly PM2.5 in Thailand using Satellite Data.",
+        "    IEEE J. Sel. Top. Appl. Earth Obs. Remote Sens. DOI:10.1109/JSTARS.2024.3384964",
+        "",
+        "[3] Jankondee, Y., Kumharn, W., et al. (2024). PM2.5 modeling based on CALIPSO",
+        "    in Bangkok. Creative Science, 16(3). DOI:10.55674/cs.v16i3.257117",
     ]
+    y = 1.2
+    for line in refs:
+        if line:
+            add_text(slide, line, 0.7, y, 11.5, 0.35,
+                     font_size=13, color=TEXT_DARK, font_name="Consolas")
+        y += 0.35
 
-    y = 1.5
+    add_text(slide, "Tech Stack", 0.7, 4.7, 11.5, 0.5,
+             font_size=16, bold=True, color=PRIMARY)
+    add_bullets(slide, [
+        "Apache Airflow | Triton Inference Server | ONNX Runtime",
+        "PostgreSQL | FastAPI | Streamlit | MLflow",
+        "Docker Compose | AirBKK API (Thai air quality)",
+    ], 0.7, 5.2, 11.5, 1.5, font_size=14, color=TEXT_DARK)
+
+
+def slide_qa(prs):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    set_slide_bg(slide, BG_LIGHT)
+    add_text(slide, "Q&A \u2014 Prepared Answers", 0.5, 0.4, 12.5, 0.6,
+             font_size=26, bold=True, color=TEXT_DARK)
+
+    qas = [
+        ("Q: Why does Ridge beat Deep Learning?",
+         "Good features + simple model > complex model. [Malakouti 2025] shows SHAP lag-1 dominates."),
+        ("Q: Which model for production?",
+         "Ridge (best accuracy). Triton can hot-swap if Transformer/SARIMA improve with more data."),
+        ("Q: How often does it retrain?",
+         "Daily check. If PSI > 0.2 or MAE > threshold -> auto-trigger training DAG."),
+        ("Q: Why LSTM performs poorly?",
+         "Needs more data + longer sequences. With 5+ years data, it should improve significantly."),
+        ("Q: What's novel here?",
+         "7 models competing on same pipeline + auto-monitoring + production deployment (not just research)."),
+    ]
+    y = 1.2
     for q, a in qas:
-        add_text(slide, q, 0.5, y, 12.0, 0.4,
-                 font_size=14, bold=True, color=PRIMARY)
-        add_text(slide, a, 0.7, y + 0.4, 11.8, 0.5,
-                 font_size=13, color=TEXT_DARK)
-        y += 1.0
+        add_text(slide, q, 0.5, y, 12.0, 0.35, font_size=14, bold=True, color=PRIMARY)
+        add_text(slide, a, 0.7, y + 0.35, 11.8, 0.45, font_size=13, color=TEXT_DARK)
+        y += 0.95
 
 
 def main():
@@ -531,33 +521,36 @@ def main():
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
 
-    # Slide order
-    slide_title(prs)
-    slide_hook(prs)
-    slide_demo_marker(prs, "Demo: Live Dashboard",
-                      "See PM2.5 now + multi-model predictions",
-                      "http://<EC2-IP>:8502  →  Live Dashboard",
-                      "Scene: Station 59 selected · Point at cards + chart")
-    slide_problem(prs)
-    slide_data(prs)
-    slide_models(prs)
-    slide_features(prs)
-    slide_demo_marker(prs, "Demo: Spike Replay (⏮️ Time Machine)",
-                      "Watch models predict a real spike — hour by hour",
-                      "http://<EC2-IP>:8502  →  Spike Replay",
-                      "Station 59 / 2025-01-24 · Auto-play · Wait for early-warning banner")
-    slide_results(prs)
-    slide_when_to_use(prs)
-    slide_architecture(prs)
-    slide_why_matters(prs)
-    slide_closing(prs)
-    slide_team_qa(prs)
+    # 16 slides for 10-min video
+    slide_title(prs)          # 1
+    slide_hook(prs)           # 2
+    slide_research(prs)       # 3 - Papers
+    slide_data(prs)           # 4 - Pipeline
+    slide_models(prs)         # 5 - 7 Models
+    slide_features(prs)       # 6 - Features
+    slide_demo_marker(prs,    # 7 - Demo Live
+        "Demo: Live Dashboard",
+        "PM2.5 now + multi-model predictions",
+        "http://54.252.197.62:8502",
+        "Station 56 | Metric cards | Chart")
+    slide_demo_marker(prs,    # 8 - Demo Spike
+        "Demo: Spike Replay",
+        "Watch models predict a real spike hour-by-hour",
+        "http://54.252.197.62:8502 -> Spike Replay",
+        "Station 59 / 2025-01-24 | Auto-play | Scoreboard")
+    slide_results(prs)        # 9 - Results (real data!)
+    slide_when_to_use(prs)    # 10 - When to use
+    slide_architecture(prs)   # 11 - Architecture
+    slide_why_matters(prs)    # 12 - Impact
+    slide_closing(prs)        # 13 - Closing
+    slide_references(prs)     # 14 - References
+    slide_qa(prs)             # 15 - Q&A
 
     out = Path("reports/FoonAlert_Presentation.pptx")
     out.parent.mkdir(parents=True, exist_ok=True)
     prs.save(out)
-    print(f"✅ Saved: {out}")
-    print(f"   {len(prs.slides)} slides")
+    print(f"Saved: {out}")
+    print(f"  {len(prs.slides)} slides")
 
 
 if __name__ == "__main__":
