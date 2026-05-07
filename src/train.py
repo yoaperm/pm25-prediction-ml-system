@@ -23,6 +23,7 @@ from feature_engineering import build_features, get_feature_columns
 from evaluate import evaluate_model, print_metrics
 from lstm_model import train_lstm_with_tuning
 from sarima_model import train_sarima_with_tuning, predict_sarima_rolling, fit_sarima
+from transformer_model import predict_transformer, train_transformer_regressor
 
 
 def get_model(name: str, params: dict = None):
@@ -151,7 +152,12 @@ def _save_model(model, key: str, train_start: str, train_end: str,
     Save model with training date range in filename, export to ONNX,
     and update active_model.json. Previous versioned files are kept.
     """
-    from export_onnx import export_sklearn, export_xgboost, export_lstm as export_lstm_onnx
+    from export_onnx import (
+        export_lstm as export_lstm_onnx,
+        export_sklearn,
+        export_transformer,
+        export_xgboost,
+    )
 
     onnx_dir      = os.path.join(models_dir, "onnx")
     os.makedirs(onnx_dir, exist_ok=True)
@@ -164,6 +170,13 @@ def _save_model(model, key: str, train_start: str, train_end: str,
         export_lstm_onnx(model, onnx_dir, output_path=onnx_path)
     elif key == "xgboost":
         export_xgboost(model, onnx_dir, output_path=onnx_path)
+    elif key == "transformer":
+        export_transformer(
+            model,
+            onnx_dir,
+            output_path=onnx_path,
+            n_features=getattr(model, "n_features", 17),
+        )
     else:
         export_sklearn(model, key, onnx_dir, output_path=onnx_path)
 
@@ -327,7 +340,26 @@ def train_all_models(config: dict):
         trained["lstm"] = ("LSTM", lstm_model, m, True)
         results.append({"model": "LSTM", **m, "best_params": str(lstm_best)})
 
-    # 6. SARIMA — statistical time-series benchmark
+    # 6. Transformer
+    transformer_params = config.get("models", {}).get("transformer", {}).get("params", {})
+    with mlflow.start_run(run_name="Transformer"):
+        transformer_model, transformer_best = train_transformer_regressor(
+            X_train_sub,
+            y_train_sub,
+            X_val,
+            y_val,
+            transformer_params,
+            random_state,
+        )
+        y_pred_transformer = predict_transformer(transformer_model, X_test)
+        m = evaluate_model(y_test, y_pred_transformer)
+        print_metrics("Transformer", m)
+        mlflow.log_params(transformer_best)
+        mlflow.log_metrics(m)
+        trained["transformer"] = ("Transformer", transformer_model, m, False)
+        results.append({"model": "Transformer", **m, "best_params": str(transformer_best)})
+
+    # 7. SARIMA — statistical time-series benchmark
     # Uses only the pm25 endog series, not the feature matrix.
     # Not added to `trained` for ONNX competition; handled separately below.
     sarima_cfg = config.get("models", {}).get("sarima", {})

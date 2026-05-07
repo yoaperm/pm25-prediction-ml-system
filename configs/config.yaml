@@ -68,6 +68,21 @@ models:
       epochs: [50]
       batch_size: [16]
 
+  transformer:
+    name: "TabularTransformerRegressor"
+    params:
+      d_model: 32
+      nhead: 4
+      num_layers: 2
+      dim_feedforward: 128
+      dropout: 0.1
+      learning_rate: 0.001
+      weight_decay: 0.0001
+      epochs: 30
+      batch_size: 512
+      patience: 5
+      train_stride: 4
+
   sarima:
     seasonal_period: 7   # weekly cycle for daily PM2.5 data
 

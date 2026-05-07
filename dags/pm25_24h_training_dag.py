@@ -1,7 +1,8 @@
 """
 PM2.5 T+24h Training DAG  (PostgreSQL-based, dynamic date splits)
 ==================================================================
-Trains 5 models to predict PM2.5 exactly 24 hours ahead for stations
+Trains regression, neural, and statistical models to predict PM2.5 exactly
+24 hours ahead for stations
 that store data in PostgreSQL (pm25_raw_hourly table).
 
 Stations : 56, 57, 58, 59, 61
@@ -17,8 +18,10 @@ Task graph:
         ├── train_ridge
         ├── train_random_forest
         ├── train_xgboost
-        └── train_lstm
-                └── (all 5 join) ── evaluate ── compare_and_deploy
+        ├── train_lstm
+        ├── train_transformer
+        └── train_sarima_24h
+                └── (all join) ── evaluate ── compare_and_deploy
 
 Trigger manually via Airflow UI with:
     {"station_id": 56}
@@ -36,6 +39,7 @@ from airflow.operators.python import PythonOperator
 
 # ── Shared paths inside Docker container ─────────────────────────────────────
 SRC         = "/app/src"
+CONFIG_PATH = "/app/configs/config.yaml"
 MODELS_DIR  = "/app/models"
 RESULTS_DIR = "/app/results"
 PROCESSED   = "/app/data/processed"
@@ -483,7 +487,52 @@ def _train_lstm(**context):
     print(f"  LSTM  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}  epochs={epochs_done}  device={device_str}")
 
 
-# ── Task 2f: SARIMA (statistical time-series benchmark, m=24) ────────────────
+# ── Task 2f: Transformer (tabular feature-token encoder) ─────────────────────
+def _train_transformer(**context):
+    import mlflow
+    import sys; sys.path.insert(0, SRC)
+    from data_loader import load_config
+    from evaluate import evaluate_model
+    from transformer_model import (
+        export_transformer_onnx,
+        predict_transformer,
+        train_transformer_regressor,
+    )
+
+    station_id = _station_id(context)
+    _setup_mlflow(station_id)
+    X_train, y_train, X_val, y_val, X_test, y_test, meta = _load_arrays(station_id)
+    config = load_config(CONFIG_PATH)
+
+    model, best = train_transformer_regressor(
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        config.get("models", {}).get("transformer", {}).get("params", {}),
+        random_state=RANDOM_STATE,
+    )
+    y_pred = predict_transformer(model, X_test)
+    val_pred = predict_transformer(model, X_val)
+    metrics = evaluate_model(y_test, y_pred)
+    val_mae = evaluate_model(y_val, val_pred)["MAE"]
+
+    with mlflow.start_run(run_name="Transformer_24h"):
+        mlflow.log_params({**best, "station": station_id})
+        mlflow.log_metrics({**metrics, "val_MAE": val_mae})
+
+    export_transformer_onnx(
+        model,
+        _tmp_onnx(station_id, "transformer"),
+        n_features=meta["n_features"],
+    )
+    print(
+        f"  Transformer  RMSE={metrics['RMSE']:.4f}  MAE={metrics['MAE']:.4f}  "
+        f"val_MAE={val_mae:.4f}  epochs={best['epochs_done']}  device={best['device']}"
+    )
+
+
+# ── Task 2g: SARIMA (statistical time-series benchmark, m=24) ────────────────
 def _train_sarima_24h(**context):
     import json
     import pandas as pd
@@ -546,6 +595,7 @@ def _evaluate(**context):
         "Random Forest":     ("random_forest",       False),
         "XGBoost":           ("xgboost",             False),
         "LSTM":              ("lstm",                True),
+        "Transformer":       ("transformer",         False),
     }
 
     results = []
@@ -653,6 +703,7 @@ def _compare_and_deploy(**context):
         "random_forest":     ("Random Forest",      False),
         "xgboost":           ("XGBoost",            False),
         "lstm":              ("LSTM",               True),
+        "transformer":       ("Transformer",         False),
     }
 
     trained = {}
@@ -842,10 +893,11 @@ with DAG(
     rf_task     = PythonOperator(task_id="train_random_forest",  python_callable=_train_random_forest)
     xgb_task    = PythonOperator(task_id="train_xgboost",        python_callable=_train_xgboost)
     lstm_task   = PythonOperator(task_id="train_lstm",           python_callable=_train_lstm)
+    trans_task  = PythonOperator(task_id="train_transformer",    python_callable=_train_transformer)
     sarima_task = PythonOperator(task_id="train_sarima_24h",     python_callable=_train_sarima_24h)
     eval_task   = PythonOperator(task_id="evaluate",             python_callable=_evaluate)
     deploy_task = PythonOperator(task_id="compare_and_deploy",   python_callable=_compare_and_deploy)
 
-    feat_task >> [linear_task, ridge_task, rf_task, xgb_task, lstm_task, sarima_task]
-    [linear_task, ridge_task, rf_task, xgb_task, lstm_task, sarima_task] >> eval_task
+    feat_task >> [linear_task, ridge_task, rf_task, xgb_task, lstm_task, trans_task, sarima_task]
+    [linear_task, ridge_task, rf_task, xgb_task, lstm_task, trans_task, sarima_task] >> eval_task
     eval_task >> deploy_task

@@ -4,9 +4,9 @@ PM2.5 T+1h Training DAG
 Daily training pipeline for next-hour PM2.5 models.
 
 This DAG is self-contained like pm25_24h_training_dag.py: it loads
-pm25_raw_hourly, builds T+1h features, trains regression and LSTM models,
-compares against the active ONNX model, deploys the best ONNX artifact,
-and publishes it to Triton.
+pm25_raw_hourly, builds T+1h features, trains regression, LSTM, and
+Transformer models, compares against the active ONNX model, deploys the
+best ONNX artifact, and publishes it to Triton.
 
 Scheduled and default manual runs train all configured stations. Manual runs
 can optionally pass {"station_ids": [56, 57]} or {"station_id": 56}.
@@ -27,6 +27,7 @@ from airflow.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 SRC = "/app/src"
+CONFIG_PATH = "/app/configs/config.yaml"
 MODELS_DIR = "/app/models"
 RESULTS_DIR = "/app/results"
 DEFAULT_DB_URL = "postgresql://postgres:postgres@postgres:5432/pm25"
@@ -129,6 +130,10 @@ def _export_onnx(model, model_key: str, n_features: int, output_path: str, is_ls
             dynamic_axes={"lstm_input": {0: "batch"}, "output": {0: "batch"}},
             opset_version=17,
         )
+    elif model_key == "transformer":
+        from transformer_model import export_transformer_onnx
+
+        export_transformer_onnx(model, output_path, n_features=n_features)
     elif model_key == "xgboost":
         from onnxmltools.convert import convert_xgboost
         from onnxmltools.convert.common.data_types import FloatTensorType as OFT
@@ -240,8 +245,10 @@ def _train_station(station_id: int, **context):
     from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
     from xgboost import XGBRegressor
 
+    from data_loader import load_config
     from evaluate import evaluate_model
     from hourly_forecast import build_hourly_supervised_features
+    from transformer_model import predict_transformer, train_transformer_regressor
 
     selected_station_ids = _manual_station_ids(context)
     if selected_station_ids is not None and station_id not in selected_station_ids:
@@ -257,6 +264,7 @@ def _train_station(station_id: int, **context):
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(f"pm25_1h_station_{station_id}")
+    config = load_config(CONFIG_PATH)
 
     splits = _get_splits()
     hourly = _load_station_hourly(station_id, db_url, splits["data_start"])
@@ -416,6 +424,33 @@ def _train_station(station_id: int, **context):
         mlflow.log_metrics({**metrics, "val_MAE": val_mae})
         trained["lstm"] = ("LSTM", model.cpu(), metrics, True)
         results.append({"model": "LSTM", **metrics, "val_MAE": val_mae, "epochs": epochs_done})
+
+    with mlflow.start_run(run_name="Transformer_1h"):
+        model, best = train_transformer_regressor(
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            config.get("models", {}).get("transformer", {}).get("params", {}),
+            random_state=RANDOM_STATE,
+        )
+        preds = predict_transformer(model, X_test)
+        val_preds = predict_transformer(model, X_val)
+        metrics = evaluate_model(y_test, preds)
+        val_mae = evaluate_model(y_val, val_preds)["MAE"]
+        mlflow.log_params({
+            **best,
+            "station": station_id,
+            "forecast_hour": FORECAST_HOUR,
+        })
+        mlflow.log_metrics({**metrics, "val_MAE": val_mae})
+        trained["transformer"] = ("Transformer", model.cpu(), metrics, False)
+        results.append({
+            "model": "Transformer",
+            **metrics,
+            "val_MAE": val_mae,
+            "epochs": best["epochs_done"],
+        })
 
     results_df = pd.DataFrame(results)
     best_key = min(trained, key=lambda k: trained[k][2]["RMSE"])

@@ -57,6 +57,12 @@ def export_lstm(model, onnx_dir, output_path=None, n_features=N_FEATURES):
     )
     print(f"  Saved: {path}")
 
+def export_transformer(model, onnx_dir, output_path=None, n_features=N_FEATURES):
+    from transformer_model import export_transformer_onnx
+
+    path = output_path or os.path.join(onnx_dir, "transformer.onnx")
+    export_transformer_onnx(model, path, n_features=n_features)
+
 def export_all(config, only=None):
     models_dir = config["output"]["models_dir"]
     onnx_dir   = config["output"].get("onnx_dir", os.path.join(models_dir, "onnx"))
@@ -88,12 +94,20 @@ def export_all(config, only=None):
             print("Converting lstm...")
             export_lstm(joblib.load(src), onnx_dir)
 
+    if only is None or only == "transformer":
+        src = os.path.join(models_dir, "transformer.joblib")
+        if not os.path.exists(src):
+            print("  Skipping transformer: not found")
+        else:
+            print("Converting transformer...")
+            export_transformer(joblib.load(src), onnx_dir)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default=None,
                         help="Model name to export (default: all). "
                              "Choices: baseline_linear_regression, ridge_regression, "
-                             "random_forest, xgboost, lstm")
+                             "random_forest, xgboost, lstm, transformer")
     args = parser.parse_args()
     config = load_config()
     export_all(config, only=args.model)

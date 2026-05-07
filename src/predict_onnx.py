@@ -18,7 +18,7 @@ from preprocessing import preprocess_pipeline
 from feature_engineering import build_features
 
 SKLEARN_MODELS = ["baseline_linear_regression", "ridge_regression", "random_forest", "xgboost"]
-ALL_MODELS     = SKLEARN_MODELS + ["lstm"]
+ALL_MODELS     = SKLEARN_MODELS + ["lstm", "transformer"]
 
 
 def _load_feature_cols(models_dir):
