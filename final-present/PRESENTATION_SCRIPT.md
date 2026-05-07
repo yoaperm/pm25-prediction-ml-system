@@ -46,15 +46,36 @@
 
 ---
 
-### [1:00 – 3:00] **Music — Data & Architecture**
+### [1:00 – 3:00] **Music — Data, Architecture & Research Foundation**
 
-*"ระบบเราดึงข้อมูลจริงทุกชั่วโมงจาก AirBKK API — ครอบคลุม 5 สถานีในกทม. มีข้อมูลทั้งหมด 3 ปี กว่า 96,000 rows"*
+*"ก่อนสร้างระบบ เราศึกษา research papers 3 ฉบับเพื่อเป็นแนวทาง:"*
 
-*"Pipeline ทำงานผ่าน Apache Airflow — รับข้อมูลชั่วโมงละครั้ง → เทรนโมเดลอัตโนมัติ → Deploy ผ่าน Triton Inference Server → API → Dashboard"*
+**📚 Paper References (สำคัญมาก — ใส่ในสไลด์):**
 
-*"ทำไมถึงใช้ hourly data? เพราะ PM2.5 spike มักเกิดใน 2-4 ชั่วโมง ถ้าใช้ daily data จะ miss จุดวิกฤตนี้ไป"*
+1. **Malakouti, S.M. (2025)** — *"From accurate to actionable: Interpretable PM2.5 forecasting with feature engineering and SHAP for the Liverpool–Wirral region"*
+   - **Environmental Challenges 21, 101290** (Elsevier)
+   - **Key insight:** Feature engineering (lag 1/7/14/30, rolling mean 3/7/14/30, day-over-day change) + SHAP → ได้ RMSE 0.54, R²=0.99
+   - **เราเอามาใช้:** Lag features, rolling stats, time features (day_of_week, weekend, month, day_of_year sine/cosine)
 
-**Feature ที่ใช้:** Lag 1/2/3/6/12/24h, Rolling mean/std 6/12/24h, Time features (hour, day_of_week, month)
+2. **Buya et al. (2024)** — *"Estimating Ground-level Hourly PM2.5 Concentrations in Thailand using Satellite Data"*
+   - **IEEE JSTARS, DOI: 10.1109/JSTARS.2024.3384964**
+   - **Key insight:** Hourly PM2.5 ในไทย peak ช่วง 8-11 น. และ 20-24 น. (rush hour effect) — dry season Nov-Mar สูงสุด
+   - **เราเอามาใช้:** Hourly granularity (ไม่ใช่ daily) + time-of-day features
+
+3. **Jankondee et al. (2024)** — *"PM2.5 modeling based on CALIPSO in Bangkok"*
+   - **Creative Science 16(3), DOI: 10.55674/cs.v16i3.257117** (Sakon Nakhon Rajabhat University)
+   - **Key insight:** Linear Mixed Effect Model (LMEM) ในกทม. ได้ R²=0.99 เมื่อรวม temperature, humidity, wind speed, BLH, NDVI
+   - **เราเอามาใช้:** Confirm ว่า linear models เหมาะกับ PM2.5 Bangkok → จึงใส่ Linear & Ridge เป็น baseline
+
+---
+
+*"ระบบเราดึงข้อมูลจริงทุกชั่วโมงจาก AirBKK API — ครอบคลุม 5 สถานีในกทม. มีข้อมูล 3 ปี กว่า 96,000 rows"*
+
+*"Pipeline ทำงานผ่าน Apache Airflow — ingest ข้อมูลชั่วโมงละครั้ง → train models อัตโนมัติ → Deploy ผ่าน Triton Inference Server → API → Dashboard"*
+
+*"ทำไมต้อง hourly? Buya et al. (2024) ชี้ว่า PM2.5 spike เกิดใน rush hour 2-4 ชั่วโมง — ใช้ daily จะ miss"*
+
+*"Feature engineering ตาม Malakouti (2025): Lag 1/2/3/6/12/24h, Rolling mean/std 6/12/24h, Time features"*
 
 ---
 
@@ -158,10 +179,40 @@
 ### Slide ที่ต้องมี (brief, ใช้คู่กับ demo)
 - Slide 1: Title "FoonAlert — PM2.5 Spike Prediction"
 - Slide 2: Problem statement (รูป Bangkok smog)
-- Slide 3: System Architecture (C4 diagram)
-- Slide 4: 7 Models comparison table (ตัวเลขจริง)
-- Slide 5: Production pipeline (Airflow + Triton + API)
-- Slide 6: ตาราง Result สรุป + Closing quote
+- Slide 3: **Research Foundation — 3 Papers** (เอามาทำ slide แยก!)
+  - Malakouti (2025) — Feature engineering & SHAP, Liverpool-Wirral
+  - Buya et al. (2024) — Hourly PM2.5 in Thailand (IEEE JSTARS)
+  - Jankondee et al. (2024) — CALIPSO PM2.5 Bangkok (Creative Science)
+- Slide 4: System Architecture (C4 diagram)
+- Slide 5: 7 Models comparison table (ตัวเลขจริง RMSE/MAE/R²)
+- Slide 6: Production pipeline (Airflow + Triton + API)
+- Slide 7: ตาราง Result สรุป + Closing quote
+- Slide 8: References (รวม papers + tools เช่น Airflow, Triton, ONNX)
+
+### 📚 References Slide Content (สำเนาใส่ slide ได้เลย)
+
+```
+Research:
+[1] Malakouti, S.M. (2025). From accurate to actionable: Interpretable PM2.5 forecasting
+    with feature engineering and SHAP for the Liverpool–Wirral region.
+    Environmental Challenges, 21, 101290.
+
+[2] Buya, S., Gokon, H., Dam, H.C., Usanavasin, S., & Karnjana, J. (2024).
+    Estimating Ground-level Hourly PM2.5 Concentrations in Thailand using Satellite Data:
+    A Log-linear Model with Sum Contrast Analysis.
+    IEEE J. Sel. Top. Appl. Earth Obs. Remote Sens.
+    DOI: 10.1109/JSTARS.2024.3384964
+
+[3] Jankondee, Y., Kumharn, W., Homchampa, C., Pilahome, O., & Nissawan, W. (2024).
+    PM2.5 modeling based on CALIPSO in Bangkok.
+    Creative Science, 16(3), 257117.
+    DOI: 10.55674/cs.v16i3.257117
+
+Tech Stack:
+- Apache Airflow • Triton Inference Server • ONNX Runtime
+- FastAPI • PostgreSQL • Streamlit • Docker Compose
+- AirBKK API (Thailand air quality data)
+```
 
 ### Tips
 - Demo screen ควรอยู่ซ้าย, คนพูดอยู่ขวา
@@ -185,15 +236,17 @@
 | Airflow UI | ✅ Running | port 8080 |
 | **FoonAlert Demo** (new) | ✅ Running | port 8502 |
 
-### สิ่งที่ **ยังเป็น Mock** ในเดโม่
+### สิ่งที่ **Train จริงแล้ว** (จาก Airflow log 2026-05-07)
 
-| Item | Status | Owner |
-|------|--------|-------|
-| SARIMA model | 🚧 Mock predictions in CSV | Olf |
-| Transformer model | 🚧 Mock predictions in CSV | Perm |
-| Real LSTM/Ridge predictions for spike days | 🚧 ใช้ mock อยู่ | Sunta (ดึงจาก DB ใน demo) |
-
-**ทำไมเป็น mock?** เพราะวันที่ทำ demo ยังไม่ได้ train SARIMA/Transformer แต่ต้องการ UI พร้อมก่อน เพื่อแบ่งงาน parallel กัน เมื่อ Olf/Perm train เสร็จ → แค่แทนค่าใน CSV ที่ `demo_data/` UI ไม่ต้องแก้
+| Model | RMSE | MAE | R² | Status |
+|-------|------|-----|----|--------|
+| Ridge | 8.50 | 6.39 | 0.22 | ✅ Best |
+| Linear Regression | 8.51 | 6.39 | 0.22 | ✅ |
+| XGBoost | 8.64 | 6.42 | 0.20 | ✅ |
+| Transformer | 8.82 | 6.59 | 0.16 | ✅ Perm |
+| Random Forest | 8.81 | 6.61 | 0.17 | ✅ |
+| SARIMA | 8.90 | 6.52 | 0.15 | ✅ Olf |
+| LSTM | 10.53 | 7.55 | -0.19 | ✅ Sunta |
 
 ---
 

@@ -849,20 +849,20 @@ def main():
 
         st.markdown("---")
         st.markdown("""
-        **Model Status**
+        **Model Status (จริงจาก Airflow)**
 
-        | Model | Status |
-        |-------|--------|
-        | Persistence | ✅ Real |
-        | Ridge / XGBoost | ✅ Real (in DB) |
-        | LSTM | ✅ Real |
-        | SARIMA | 🚧 Mock (Olf) |
-        | Transformer | 🚧 Mock (Perm) |
+        | Model | RMSE | MAE | Status |
+        |-------|------|-----|--------|
+        | Ridge | 8.50 | 6.39 | 🥇 Best |
+        | Linear | 8.51 | 6.39 | ✅ Real |
+        | XGBoost | 8.64 | 6.42 | ✅ Real |
+        | Transformer | 8.82 | 6.59 | ✅ Real |
+        | RandomForest | 8.81 | 6.61 | ✅ Real |
+        | SARIMA | 8.90 | 6.52 | ✅ Real |
+        | LSTM | 10.53 | 7.55 | ✅ Real |
 
-        *Mock models use simulated predictions
-        to demonstrate the UX. Will be replaced
-        once SARIMA / Transformer training DAGs
-        are added.*
+        *ทุกโมเดลเทรนจริงผ่าน Airflow DAG
+        `pm25_24h_training` (Station 56)*
         """)
 
         st.markdown("---")
